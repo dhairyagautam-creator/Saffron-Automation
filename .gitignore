@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Reports output
+reports/output/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+
+# --- Release hardening: machine-specific / sensitive, never commit publicly ---
+# Real business reports (customer/location data); keep reports/__init__.py
+reports/*.xlsx
+# Cached cloud / organization data
+cloud_cache/
+# Built Windows installers
+installer_output/
+# Pre-reset database backups
+pre_reset_backup_*/
+# Local Claude config (machine-specific absolute paths; project guidance
+# lives in the committed CLAUDE.md instead)
+.claude/
+# Knowledge-graph output (large, machine-generated)
+graphify-out/

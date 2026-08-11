@@ -1,0 +1,16 @@
+pandas
+openpyxl
+xlrd
+sqlalchemy
+customtkinter
+geopy
+loguru
+pillow
+matplotlib
+supabase
+python-dotenv
+keyring
+
+# Build-time only (packaging into a Windows .exe — see build_exe.ps1), not
+# needed to run the app from source.
+pyinstaller

@@ -1,0 +1,106 @@
+name: Build (Windows + macOS)
+
+# Builds BOTH platform artifacts from one source/version on native runners.
+# This workflow only *builds and uploads artifacts* -- it never creates a
+# GitHub Release. It is manually triggerable now (workflow_dispatch) and
+# already prepared for future tag-driven builds (push: tags). Wiring an
+# actual release (softprops/action-gh-release etc.) is a deliberate later
+# step, intentionally omitted here.
+on:
+  workflow_dispatch:
+  push:
+    # A push to the develop branch builds both artifacts (no release, no
+    # tag). This is what lets a Windows user get a macOS .dmg built on the
+    # native runner.
+    branches:
+      - develop
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows build + installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # .env is gitignored but PyInstaller bundles it (datas=[('.env','.')]).
+      # Write it from secrets; empty secrets just yield an empty (valid) file.
+      - name: Write .env
+        shell: pwsh
+        run: |
+          "SUPABASE_URL=${{ secrets.SUPABASE_URL }}`nSUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}`n" | Out-File -FilePath .env -Encoding utf8 -NoNewline
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Read app version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = python -c "from app.version import APP_VERSION; print(APP_VERSION)"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build Windows app (PyInstaller)
+        shell: pwsh
+        run: python -m PyInstaller --noconfirm --clean "Saffron Automation.spec"
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\saffron_validator.iss"
+
+      - name: Stage artifact with platform name
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\release | Out-Null
+          $src = "installer_output\Saffron Automation Setup v${{ steps.ver.outputs.version }}.exe"
+          Copy-Item $src "dist\release\Saffron-Automation-Windows-${{ steps.ver.outputs.version }}.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Saffron-Automation-Windows-${{ steps.ver.outputs.version }}
+          path: dist/release/Saffron-Automation-Windows-${{ steps.ver.outputs.version }}.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS build + dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Write .env
+        run: |
+          printf 'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' "${{ secrets.SUPABASE_URL }}" "${{ secrets.SUPABASE_ANON_KEY }}" > .env
+
+      - name: Read app version
+        id: ver
+        run: echo "version=$(python -c 'from app.version import APP_VERSION; print(APP_VERSION)')" >> "$GITHUB_OUTPUT"
+
+      # Reuse the same build definition a developer runs locally so CI and
+      # local builds can never drift.
+      - name: Build .app and .dmg
+        run: |
+          chmod +x build_app.sh
+          ./build_app.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Saffron-Automation-macOS-${{ steps.ver.outputs.version }}
+          path: dist/release/Saffron-Automation-macOS-${{ steps.ver.outputs.version }}.dmg
+          if-no-files-found: error
