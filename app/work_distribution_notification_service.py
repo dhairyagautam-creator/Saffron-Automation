@@ -3,9 +3,11 @@ Phase 5. Reuses the existing shared infrastructure throughout, per explicit
 instruction, rather than building a new email framework:
 - app/smtp_service.py for the actual SMTP send (Path Validator's own
   sending module, already module-agnostic -- extended, not duplicated).
-- app/work_distribution_email_settings_service.py for this module's own
-  Gmail sender credentials (already built, Email Center page already wired
-  to it).
+- app/email_settings_service.py for the Gmail sender credentials -- the
+  same single account used by the rest of the application's email
+  functionality, not a separate Work Distribution account (see
+  send_notification_batch). app/work_distribution_email_settings_service.py
+  still owns only this module's automatic-sending trigger flag.
 - app/hierarchy_parser.py / app/hierarchy_service.py for hierarchy lookups
   (find_by_employee_name/find_by_employee_code/find_by_designation,
   is_valid_recipient) -- there is exactly one hierarchy dataset in the
@@ -77,6 +79,7 @@ from datetime import datetime
 
 from loguru import logger
 
+from app.email_settings_service import get_settings
 from app.hierarchy_parser import find_by_designation, find_by_employee_code, find_by_employee_name
 from app.hierarchy_service import is_valid_recipient
 from app.manager_work_allocation_parameters_service import get_all as get_mwa_parameters, get_rbm_flag_tiers
@@ -93,7 +96,6 @@ from app.manager_work_allocation_service import (
     get_employee_bm_monthly_history as get_abm_employee_bm_monthly_history,
 )
 from app.smtp_service import open_smtp_connection, send_via_connection
-from app.work_distribution_email_settings_service import get_settings
 from app.work_distribution_email_template import render_html, render_text
 from app.work_distribution_parameters_service import get_all as get_rgd_parameters
 from app.work_distribution_service import get_all_findings as get_all_rgd_findings, get_current_period_label
