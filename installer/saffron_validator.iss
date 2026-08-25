@@ -24,7 +24,7 @@
 ; Output: installer_output\Saffron Automation Setup v{MyAppVersion}.exe
 
 #define MyChannel "production"
-#define MyAppVersion "2.3.1"
+#define MyAppVersion "2.3.2"
 #define MyAppPublisher "Saffron Formulations"
 #define MyAppExeName "Saffron Automation.exe"
 

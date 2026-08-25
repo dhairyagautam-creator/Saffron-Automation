@@ -72,7 +72,7 @@ before/after status line.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from loguru import logger
 from sqlalchemy import inspect, text
@@ -141,6 +141,42 @@ def _validate_no_raw_coordinates(employee_name: str, addresses: list[str]) -> No
                 f"reached the final address list: {address!r}. This should never happen post-fix -- "
                 "treat as a bug, not expected behavior."
             )
+
+
+# Root-caused 2026-08-25 (Release Debugging Mode investigation): a finding
+# whose first email attempt was only a DRAFT/preview (Automatic Email
+# Sending was off), or whose RBM was vacant, never advances past "Open" --
+# nothing in the existing pipeline ever revisits it. Since build_email_batch
+# has always swept up every status=="Open" finding for its import_id
+# regardless of age, that finding keeps getting included in EVERY later
+# batch run for the same import_id, each time stamped with THAT run's own
+# `generated_at` (today), making a visit from weeks ago look like it
+# belongs to the current run. Confirmed real: a finding created 2026-08-10
+# from an import dated 2026-07-15 was still being emailed as part of a
+# batch on 2026-08-25 -- 41 days after the underlying visit.
+#
+# This constant gates ONLY a finding's eligibility for a NEW automatic/
+# preview email batch -- it changes nothing else: the finding is not
+# deleted, its status is not touched, its import_id association is
+# unchanged, and it remains fully visible on the Findings page for manual
+# review. A finding re-included within this window is expected, intended
+# retry behavior (an RBM that was vacant yesterday may have an email today)
+# -- this only stops the pathological case of a finding sitting Open for
+# WEEKS and resurfacing indefinitely as if freshly detected.
+STALE_FINDING_AGE_DAYS = 7
+
+
+def _is_stale_for_email(finding) -> bool:
+    """True if `finding.created_at` (when the rule engine generated it --
+    NOT `finding.visit_date`, the underlying activity's own date, and NOT
+    today's batch-generation date) is more than STALE_FINDING_AGE_DAYS old.
+    A finding with no created_at (pre-dates that column) is never
+    considered stale -- fail open rather than silently excluding a finding
+    this check was never designed to evaluate."""
+    if finding.created_at is None:
+        return False
+    return (datetime.now() - finding.created_at) > timedelta(days=STALE_FINDING_AGE_DAYS)
+
 
 # Friendly label for each rule_name, used in the HTML/text email instead of
 # the raw internal rule name. Any rule not listed here just falls back to
@@ -507,12 +543,27 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
     (hospital suppression, reverse geocoding, email generation) — once per
     item as it completes, so the UI can show a live "N / M" count instead
     of a single before/after status line.
+
+    An Open finding older than STALE_FINDING_AGE_DAYS (see that constant's
+    own docstring) is excluded from this batch entirely -- logged, not
+    silently dropped -- so a finding nobody ever resolved doesn't keep
+    resurfacing indefinitely as if it belonged to today's run. It stays
+    Open and fully visible on the Findings page either way.
     """
     progress_callback = progress_callback or (lambda stage, **kwargs: None)
     report = get_current_report()
     geocode_stats_by_employee: dict = {}
 
-    findings = [f for f in get_all_findings(import_id) if f.status == "Open"]
+    open_findings = [f for f in get_all_findings(import_id) if f.status == "Open"]
+    findings = [f for f in open_findings if not _is_stale_for_email(f)]
+    stale_findings = [f for f in open_findings if _is_stale_for_email(f)]
+    if stale_findings:
+        logger.warning(
+            f"build_email_batch(import_id={import_id}): {len(stale_findings)} Open finding(s) excluded "
+            f"as stale (older than {STALE_FINDING_AGE_DAYS} days, never resolved) -- still visible on "
+            "the Findings page for manual review: "
+            + ", ".join(f"{f.employee_name} ({f.employee_code}) on {f.visit_date}" for f in stale_findings)
+        )
 
     progress_callback("hierarchy", label="Resolving hierarchy...")
     hierarchy_timer = PhaseTimer()

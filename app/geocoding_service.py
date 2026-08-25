@@ -11,7 +11,22 @@ for each flagged coordinate this resolves, in order:
      is what surfaces "Shalby Hospital", "Anand Niketan School", etc.
   2. Geoapify reverse geocoding — the street/road/named-place level
      (`formatted`), e.g. "Sai Healthcare, Zadeshwar-Bharuch Road, Bharuch".
-     Deliberately NOT the coarse administrative fallback.
+     Deliberately NOT the coarse administrative fallback -- UNLESS the
+     feature Geoapify actually matched sits farther than
+     REVERSE_MATCH_MAX_DISTANCE_METERS from the queried coordinate (see
+     `_feature_distance_meters`/`_coarse_address` below), in which case the
+     specific POI/business name is dropped in favor of the coarser
+     street/city/state components it also returned -- naming a shop or
+     hospital the employee wasn't actually at is worse than a plainer but
+     honest locality description. Root-caused 2026-08-25 (Release Debugging
+     Mode investigation): the Places landmark search above found ZERO
+     results for 17/18 real production coordinates tested (rural/small-town
+     India has sparse landmark coverage in Geoapify's index), so in
+     practice EVERY real case fell through to this reverse step, and its
+     `formatted` result turned out to be Geoapify's nearest indexed POI of
+     ANY kind -- measured 41-218 meters from the actual visited coordinate
+     across 6 spot-checked cases, i.e. a real (not hypothetical) risk of
+     naming an unrelated nearby business as if the employee visited it.
   3. None — only if the provider genuinely returns nothing (the caller then
      shows "Address unavailable"; a raw lat/lon is never displayed).
 
@@ -34,6 +49,7 @@ from loguru import logger
 from sqlalchemy.exc import IntegrityError
 
 from app.geoapify_settings_service import get_geoapify_api_key
+from app.geo_utils import haversine_km
 from database.connection import get_session
 from database.models import GeocodeCache
 
@@ -49,6 +65,17 @@ REVERSE_URL = "https://api.geoapify.com/v1/geocode/reverse"
 # address. Within this, the employee is essentially AT the landmark; beyond
 # it, the reverse-geocoded nearest named place/road is more truthful.
 LANDMARK_RADIUS_METERS = 300
+
+# How close the feature Geoapify's REVERSE endpoint actually matched has to
+# be to the queried coordinate before its name is trusted as "where the
+# employee was". Beyond this, _geoapify_reverse drops the POI/business name
+# and falls back to _coarse_address's plainer street/city/state components
+# instead. Chosen from the 2026-08-25 investigation's own measured range
+# (41m/54m/71m real matches worth keeping vs. 91m/132m/218m ones that
+# named a materially unrelated nearby business) -- comfortably above the
+# module's own 50m same-location detection radius, so a match this close
+# genuinely could be the visited spot, not an arbitrary cutoff.
+REVERSE_MATCH_MAX_DISTANCE_METERS = 75
 
 # Broad set of recognisable-landmark categories (Geoapify category tree):
 # hospitals/clinics, malls/markets/shops, schools/colleges/universities,
@@ -134,9 +161,52 @@ def _geoapify_landmark(lat: float, lon: float, api_key: str) -> str | None:
     return display
 
 
+def _feature_distance_meters(lat: float, lon: float, feature: dict) -> float | None:
+    """Straight-line distance between the queried coordinate and the
+    coordinate Geoapify's response says it actually matched (GeoJSON
+    `geometry.coordinates`, [lon, lat]) -- None if the response carries no
+    usable geometry. Same haversine_km formula rules/same_location.py uses
+    for its own 50m detection, just applied here to a DIFFERENT question
+    (how far is this reverse-geocode match from the query point, not
+    whether two visits cluster) -- this never feeds back into detection."""
+    coords = (feature.get("geometry") or {}).get("coordinates")
+    if not coords or len(coords) < 2:
+        return None
+    feature_lon, feature_lat = coords[0], coords[1]
+    return haversine_km(lat, lon, feature_lat, feature_lon) * 1000.0
+
+
+def _coarse_address(props: dict) -> str | None:
+    """Street/locality-level address built from Geoapify's own component
+    fields, deliberately WITHOUT the specific POI/business name `formatted`
+    leads with -- used when that matched feature is farther than
+    REVERSE_MATCH_MAX_DISTANCE_METERS from the actual query point (see
+    _geoapify_reverse), where naming it would misrepresent the visit
+    location. None if none of these components were returned either."""
+    parts = []
+    if props.get("street"):
+        parts.append(props["street"])
+    city = props.get("city") or props.get("county")
+    postcode = props.get("postcode")
+    if city and postcode:
+        parts.append(f"{city} - {postcode}")
+    elif city:
+        parts.append(city)
+    if props.get("state"):
+        parts.append(props["state"])
+    if props.get("country"):
+        parts.append(props["country"])
+    return ", ".join(parts) if parts else None
+
+
 def _geoapify_reverse(lat: float, lon: float, api_key: str) -> str | None:
     """Street/road/named-place level reverse geocode (Geoapify `formatted`),
-    NOT the coarse administrative rollup. Returns None if nothing usable."""
+    NOT the coarse administrative rollup -- UNLESS the feature Geoapify
+    actually matched is farther than REVERSE_MATCH_MAX_DISTANCE_METERS from
+    `(lat, lon)`, in which case its specific name is dropped for
+    _coarse_address's plainer (but honest) components instead (see this
+    module's own docstring for why: measured 41-218m real mismatches).
+    Returns None if nothing usable came back at all."""
     params = {"lat": lat, "lon": lon, "lang": "en", "apiKey": api_key}
     data = _get_json(f"{REVERSE_URL}?{urllib.parse.urlencode(params)}")
     if not data:
@@ -144,7 +214,23 @@ def _geoapify_reverse(lat: float, lon: float, api_key: str) -> str | None:
     features = data.get("features", [])
     if not features:
         return None
-    props = features[0].get("properties") or {}
+    feature = features[0]
+    props = feature.get("properties") or {}
+
+    distance_m = _feature_distance_meters(lat, lon, feature)
+    if distance_m is not None and distance_m > REVERSE_MATCH_MAX_DISTANCE_METERS:
+        coarse = _coarse_address(props)
+        if coarse:
+            logger.info(
+                f"Geocoded ({lat}, {lon}) -> matched feature {distance_m:.0f}m away "
+                f"(> {REVERSE_MATCH_MAX_DISTANCE_METERS}m) -- using coarse '{coarse}' "
+                f"instead of naming the distant feature ('{props.get('formatted')}')"
+            )
+            return coarse
+        # No street/city/state component to fall back on either -- fall
+        # through to `formatted` below rather than returning nothing, same
+        # as the pre-fix behavior for this edge case.
+
     formatted = props.get("formatted") or props.get("address_line1")
     if not formatted:
         return None
