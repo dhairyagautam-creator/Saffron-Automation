@@ -79,6 +79,7 @@ from sqlalchemy import inspect, text
 
 from app.email_template import concentration_sentence, occurrence_bullets, render_manager_email_html, render_manager_email_text
 from app.feature_flags_service import is_feature_enabled
+from app.geo_utils import haversine_km
 from app.findings_service import (
     get_all_findings,
     note_suppression_check_issue,
@@ -283,21 +284,33 @@ def _xandra_override_recipient(hq: str | None) -> tuple[str | None, str | None]:
     return None, None
 
 
+DOCTOR_NAME_COLUMN = "Name"  # the doctor/customer visited -- distinct from "Employee Name" (the BM/ABM)
+
+
 def _get_finding_context(import_id: int, employee_code: str, visit_date) -> dict:
-    """Return {'hq': str|None, 'region': str|None, 'coordinates': [(lat, lon), ...]}
-    for the exact visits this finding covers — the same valid-coordinate
-    rows the rule engine evaluated. This is the scope-narrowing step: only
-    these coordinates are ever geocoded, and HQ/Region come straight from
-    the imported workbook rather than depending on a hierarchy match.
-    `region` feeds the Region Suppression Rule (see
-    app/region_suppression.py) — a separate, later filter from Hospital
-    Suppression."""
+    """Return {'hq': str|None, 'region': str|None, 'coordinates': [(lat, lon), ...],
+    'visits': [(lat, lon, doctor_name), ...]} for the exact visits this
+    finding covers — the same valid-coordinate rows the rule engine
+    evaluated. This is the scope-narrowing step: only these coordinates
+    are ever geocoded, and HQ/Region come straight from the imported
+    workbook rather than depending on a hierarchy match. `region` feeds
+    the Region Suppression Rule (see app/region_suppression.py) — a
+    separate, later filter from Hospital Suppression.
+
+    `coordinates` and `visits` cover the exact same rows (one entry per
+    raw visit record with valid GPS, in the SAME order, never
+    deduplicated) — `coordinates` stays a bare (lat, lon) list because
+    that's the shape the reverse-geocoding dedup step (build_email_batch's
+    own `coordinate_set`) already expects; `visits` additionally carries
+    each row's own doctor name for the email's per-visit presentation
+    (see notification_service.build_email_batch's addresses_by_employee)."""
     if not inspect(get_data_engine()).has_table(RAW_VISITS_TABLE):
-        return {"hq": None, "region": None, "coordinates": []}
+        return {"hq": None, "region": None, "coordinates": [], "visits": []}
 
     date_str = visit_date.strftime("%d-%m-%Y")
     query = text(
-        f'SELECT "{REPORTING_HQ_COLUMN}", "{REGION_COLUMN}", latitude, longitude FROM {RAW_VISITS_TABLE} '
+        f'SELECT "{REPORTING_HQ_COLUMN}", "{REGION_COLUMN}", "{DOCTOR_NAME_COLUMN}", latitude, longitude '
+        f'FROM {RAW_VISITS_TABLE} '
         f'WHERE import_id = :iid AND "{EMPLOYEE_CODE_COLUMN}" = :code AND "{DATE_COLUMN}" = :date_str'
     )
     with get_data_engine().connect() as conn:
@@ -308,15 +321,32 @@ def _get_finding_context(import_id: int, employee_code: str, visit_date) -> dict
     hq = None
     region = None
     coordinates = []
-    for reporting_hq, row_region, lat, lon in rows:
+    visits = []
+    for reporting_hq, row_region, doctor_name, lat, lon in rows:
         if hq is None and reporting_hq:
             hq = reporting_hq
         if region is None and row_region:
             region = row_region
         if lat is not None and lon is not None:
             coordinates.append((lat, lon))
+            visits.append((lat, lon, doctor_name))
 
-    return {"hq": hq, "region": region, "coordinates": coordinates}
+    return {"hq": hq, "region": region, "coordinates": coordinates, "visits": visits}
+
+
+def _visit_is_flagged(lat: float, lon: float, finding) -> bool:
+    """True if this individual visit's own coordinate falls within the
+    ALREADY-COMPUTED 50m cluster for `finding` -- the same haversine_km
+    formula and the same cluster_lat/cluster_lon/radius_meters the rule
+    (rules/same_location.py) already stored on the finding when it decided
+    this employee-day was flagged. Never recomputes or changes that
+    decision -- this only decides, for presentation, which of an already-
+    flagged day's individual visits to highlight. False (never highlighted)
+    for a finding predating these columns, where any of the three is None."""
+    if finding.radius_meters is None or finding.cluster_lat is None or finding.cluster_lon is None:
+        return False
+    radius_km = finding.radius_meters / 1000.0
+    return haversine_km(lat, lon, finding.cluster_lat, finding.cluster_lon) <= radius_km
 
 
 def _get_import_file_name(import_id: int) -> str:
@@ -766,15 +796,28 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
 
     address_by_coord = {coord: address_by_rounded.get(round_coordinate(*coord)) for coord in coordinate_set}
 
+    # addresses_by_employee[employee_name] -- ONE ENTRY PER UNDERLYING VISIT
+    # RECORD, deliberately never deduplicated (2026-08-25, presentation-only
+    # change): two visit records that resolve to the same address are two
+    # separate entries here, each carrying its own doctor name and its own
+    # "flagged" bit -- whether THIS individual visit's coordinate falls
+    # within the already-computed 50m cluster for its finding (same
+    # haversine_km formula, same cluster_lat/cluster_lon/radius_meters the
+    # rule itself already stored on the finding -- this never recomputes
+    # or changes which employee-day gets flagged, it only decides which of
+    # that already-flagged day's individual visits to highlight in the
+    # email). {"doctor": str, "address": str, "flagged": bool} per entry.
     addresses_by_employee: dict = {}
     for item in enriched:
         finding = item["finding"]
         context = contexts[finding.finding_id]
-        addresses = addresses_by_employee.setdefault(finding.employee_name, [])
+        visit_rows = addresses_by_employee.setdefault(finding.employee_name, [])
         stats = geocode_stats_by_employee.setdefault(
             finding.employee_name, {"detected": set(), "resolved": 0, "failed": 0}
         )
-        for coord in context["coordinates"]:
+
+        for lat, lon, doctor_name in context["visits"]:
+            coord = (lat, lon)
             if coord not in stats["detected"]:
                 stats["detected"].add(coord)
                 address = address_by_coord.get(coord)
@@ -783,17 +826,24 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
                 else:
                     stats["failed"] += 1
             address = address_by_coord.get(coord) or ADDRESS_UNAVAILABLE_TEXT
-            if address not in addresses:
-                addresses.append(address)
 
-    for employee_name, addresses in addresses_by_employee.items():
+            flagged = _visit_is_flagged(lat, lon, finding)
+
+            visit_rows.append({
+                "doctor": (doctor_name or "").strip() or "Doctor name unavailable",
+                "address": address,
+                "flagged": flagged,
+            })
+
+    for employee_name, visit_rows in addresses_by_employee.items():
         stats = geocode_stats_by_employee.get(employee_name, {"detected": set(), "resolved": 0, "failed": 0})
         detected = len(stats["detected"])
         attempted = detected  # every detected location is resolved cache-first, so all are "attempted"
+        flagged_count = sum(1 for v in visit_rows if v["flagged"])
         logger.info(
             f"[Reverse Geocoding] Employee: {employee_name} | locations detected: {detected}, "
             f"attempted: {attempted}, resolved: {stats['resolved']}, failed: {stats['failed']}, "
-            f"final addresses in email: {len(addresses)}"
+            f"visit records in email: {len(visit_rows)} ({flagged_count} flagged as within the 50m cluster)"
         )
         if stats["resolved"] + stats["failed"] != detected:
             logger.error(
@@ -801,7 +851,7 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
                 f"detected={detected} but resolved({stats['resolved']}) + failed({stats['failed']}) "
                 f"= {stats['resolved'] + stats['failed']}"
             )
-        _validate_no_raw_coordinates(employee_name, addresses)
+        _validate_no_raw_coordinates(employee_name, [v["address"] for v in visit_rows])
 
     with report.timed("Email grouping"):
         rbm_groups: dict = {}

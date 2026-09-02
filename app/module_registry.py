@@ -82,6 +82,13 @@ MODULES: tuple[ModuleDef, ...] = (
         description="Manage user accounts and module permissions.",
         icon_name="Settings",
     ),
+    ModuleDef(
+        key="review_system",
+        screen_name="Review System",
+        title="Review System",
+        description="Upload, preview, and review files against your organization's hierarchy.",
+        icon_name="Review System",
+    ),
 )
 
 _BY_KEY = {module.key: module for module in MODULES}

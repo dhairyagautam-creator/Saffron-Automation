@@ -33,6 +33,15 @@ BORDER = "#E4E6EA"
 SURFACE = "#F6F7F9"
 WHITE = "#FFFFFF"
 
+# Mirrors ui/theme.py's Color.CRITICAL_ROW_BG/CRITICAL_ROW_TEXT (a muted
+# red, Excel "Bad"-cell-style pairing, not a saturated/neon red) -- used
+# ONLY to highlight a visit record already identified by the existing 50m
+# concentration logic (see app.notification_service's `flagged` derivation
+# in its addresses_by_employee build). Never applied to a row just because
+# it belongs to the same employee as a flagged one.
+FLAG_ROW_BG = "#FFC7CE"
+FLAG_ROW_TEXT = "#9C0006"
+
 FONT_STACK = "Arial, Helvetica, sans-serif"
 
 # Referenced by app/smtp_service.py, which attaches assets/saffron_logo.png
@@ -142,18 +151,47 @@ def _findings_table(table_rows: list[dict], columns: list[tuple[str, str]]) -> s
     """
 
 
-def _address_list(addresses: list[str]) -> str:
-    if not addresses:
+def _visit_records_table(visits: list[dict]) -> str:
+    """One row per UNDERLYING VISIT RECORD -- never deduplicated, so two
+    visits that resolve to the same address are shown as two rows, each
+    with its own doctor name (see app.notification_service's
+    addresses_by_employee, which builds `visits` this way on purpose).
+    Visited Address is shown before Doctor, per the required presentation
+    order. A row already identified by the existing 50m concentration
+    logic (`visit["flagged"]`, computed in notification_service -- never
+    recomputed here) is highlighted; every other row gets the plain
+    alternating-stripe treatment, never highlighted just for sharing an
+    employee with a flagged row."""
+    if not visits:
         return (
             f'<div style="font-size:13px;color:{TEXT_MUTED};font-family:{FONT_STACK};">'
-            "No resolved addresses available.</div>"
+            "No resolved visit records available.</div>"
         )
-    items = "".join(
-        f'<li style="margin-bottom:4px;font-size:13px;color:{TEXT_PRIMARY};'
-        f'font-family:{FONT_STACK};">{esc(address)}</li>'
-        for address in addresses
+    header_cells = "".join(
+        f'<th style="background-color:{BRAND_PRIMARY};color:{WHITE};text-align:left;padding:8px 10px;'
+        f'border:1px solid {BRAND_PRIMARY_DARK};font-size:12px;font-family:{FONT_STACK};">{label}</th>'
+        for label in ("Visited Address", "Doctor", "Status")
     )
-    return f'<ul style="margin:6px 0 0 18px;padding:0;">{items}</ul>'
+    rows_html = []
+    for i, visit in enumerate(visits):
+        flagged = bool(visit.get("flagged"))
+        bg = FLAG_ROW_BG if flagged else (WHITE if i % 2 == 0 else SURFACE)
+        text_color = FLAG_ROW_TEXT if flagged else TEXT_PRIMARY
+        status_text = "50m Flag" if flagged else "Normal"
+        status_weight = "bold" if flagged else "normal"
+        cell_style = f'padding:8px 10px;border:1px solid {BORDER};font-size:13px;color:{text_color};font-family:{FONT_STACK};background-color:{bg};'
+        rows_html.append(
+            f'<tr>'
+            f'<td style="{cell_style}">{esc(visit["address"])}</td>'
+            f'<td style="{cell_style}">{esc(visit["doctor"])}</td>'
+            f'<td style="{cell_style}font-weight:{status_weight};">{esc(status_text)}</td>'
+            f'</tr>'
+        )
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'style="border-collapse:collapse;margin:6px 0 0 0;border:1px solid {BORDER};">'
+        f'<tr>{header_cells}</tr>{"".join(rows_html)}</table>'
+    )
 
 
 def _bullet_list(lines: list[str]) -> str:
@@ -210,9 +248,9 @@ def _employee_section(section: dict) -> str:
         parts.append(_labeled_block("Location", location_lines))
         parts.append(
             f'<div style="font-size:13px;color:{TEXT_PRIMARY};margin-top:12px;font-family:{FONT_STACK};">'
-            f"<strong>Frequent Visit Locations</strong></div>"
+            f"<strong>Visit Records</strong></div>"
         )
-        parts.append(_address_list(section["addresses"]))
+        parts.append(_visit_records_table(section["addresses"]))
 
     for wh in section.get("working_hours", []):
         parts.append(_labeled_block("Working Hours", _working_hours_lines(wh)))
@@ -394,11 +432,13 @@ def render_manager_email_text(
             for occurrence in section["occurrences"]:
                 for line in occurrence:
                     lines.append(f"- {line}")
-            lines.append("Frequent Visit Locations:")
+            lines.append("Visit Records:")
             if section["addresses"]:
-                lines.extend(f"  - {address}" for address in section["addresses"])
+                for visit in section["addresses"]:
+                    marker = " [50m FLAG]" if visit.get("flagged") else ""
+                    lines.append(f"  - {visit['address']} — {visit['doctor']}{marker}")
             else:
-                lines.append("  - No resolved addresses available.")
+                lines.append("  - No resolved visit records available.")
         for wh in section.get("working_hours", []):
             lines.append("Working Hours:")
             for line in _working_hours_lines(wh):

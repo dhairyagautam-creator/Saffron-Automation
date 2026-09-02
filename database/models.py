@@ -8,7 +8,7 @@ dynamically by pandas (see database/import_service.py).
 
 from datetime import datetime
 
-from sqlalchemy import Column, Date, DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, String, Text, UniqueConstraint
 
 from database.connection import Base
 
@@ -216,6 +216,81 @@ class WorkbookConnection(Base):
     updated_at = Column(DateTime, nullable=True)
 
 
+class ReviewFileSlot(Base):
+    """One row per Review System upload slot (see app/review_schemas.py for
+    the fixed set of 12 slot_ids) -- mirrors WorkbookConnection's
+    named-slot-to-file-path shape, plus the validation state the Review
+    System readiness gate needs. The uploaded file itself is never stored
+    here (or in git) -- only its path under app.config.REVIEW_UPLOADS_DIR
+    (see app/review_upload_service.py)."""
+
+    __tablename__ = "review_file_slots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    slot_id = Column(String, nullable=False, unique=True)
+    filename = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
+    valid = Column(Boolean, nullable=False, default=False)
+    # JSON-encoded list of human-readable validation error strings (see
+    # app/review_validation.validate_review_file) -- kept as text so the
+    # exact messages shown at upload time survive a later app restart.
+    errors_json = Column(Text, nullable=True)
+    row_count = Column(Integer, nullable=True)
+    column_count = Column(Integer, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+
+
+class ReviewCoverageParameter(Base):
+    """A single named setting for the Coverage Summary automated-email
+    workflow (see app/review_coverage_email_settings_service.py) --
+    currently just the automatic-sending toggle. Deliberately does NOT
+    store a sender email/app password of its own: the workflow always
+    sends through the ONE shared account in app/email_settings_service.py
+    (the same account Path Validator uses), never a second,
+    independently-configured one -- mirrors WorkDistributionParameter's
+    own shape exactly (plain name/value store)."""
+
+    __tablename__ = "review_coverage_parameters"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    parameter_name = Column(String, nullable=False, unique=True)
+    parameter_value = Column(String, nullable=False)
+
+
+class ReviewCoverageEmailNotification(Base):
+    """One row per Coverage Summary automated-email send attempt -- one
+    row per ABM per send run (a consolidated email with one attachment
+    per BM reporting to that ABM), mirroring
+    WorkDistributionEmailNotification's own shape and status vocabulary
+    (Draft | Sent | Failed) -- see
+    app/review_coverage_notification_service.py.
+
+    `bm_names` is a comma-separated list of the BM(s) whose Coverage
+    Summary file was attached to this one email -- descriptive only, not
+    a grouping key. `recipient_name`/`recipient_email` are a snapshot at
+    send time (read from employee_hierarchy then, not a foreign key) -- a
+    later hierarchy refresh must never rewrite this attempt's own
+    history.
+
+    Always stored on the config/main database (get_config_session()) --
+    Review System has no Developer Mode concept of its own."""
+
+    __tablename__ = "review_coverage_email_notifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    division = Column(String, nullable=True)
+    recipient_name = Column(String, nullable=True)
+    recipient_email = Column(String, nullable=True)
+    bm_names = Column(String, nullable=True)
+    bm_count = Column(Integer, nullable=False, default=0)
+    subject = Column(String, nullable=False)
+    body = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="Draft")
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    sent_at = Column(DateTime, nullable=True)
+
+
 class GeocodeCache(Base):
     """Caches a resolved address per coordinate pair so the same GPS point
     is never sent to the reverse-geocoding service twice. Populated only at
@@ -373,6 +448,15 @@ class AppSettings(Base):
     # inside Developer Mode (see app/dev_auth_service.py).
     dev_password_hash = Column(String, nullable=True)
     dev_password_salt = Column(String, nullable=True)
+    # GLOBAL (user row only): the one-time company-wide Inventory data
+    # factory reset (see app/inventory_factory_reset.py) has completed --
+    # both the local InventoryThreshold/InventoryReplenishment/CwhStock
+    # clear AND the cloud clear succeeded. Set ONLY after both succeed;
+    # left 0 on any failure (e.g. Supabase unreachable) so the reset
+    # retries on the next launch rather than being silently marked done
+    # when it wasn't. Same "GLOBAL, user row only" convention as
+    # setup_completed above.
+    inventory_data_reset_completed = Column(Integer, nullable=False, default=0)  # 0/1
     updated_at = Column(DateTime, nullable=True)
 
 
@@ -859,12 +943,20 @@ class WorkDistributionDoctor(Base):
     each upload, since the report is a complete monthly snapshot, not an
     incremental delta.
 
-    A doctor always belongs to exactly one BM (`bm`); `abm` is only
-    meaningful for ABM KPI purposes when `abm_rgd` normalizes to "A-RGD"
-    (see app.work_distribution_service._is_a_rgd) -- a blank or
+    A doctor always belongs to exactly one BM (`bm_code`); `abm_code` is
+    only meaningful for ABM KPI purposes when `abm_rgd` normalizes to
+    "A-RGD" (see app.work_distribution_service._is_a_rgd) -- a blank or
     non-"A-RGD" value excludes this doctor from ABM calculations entirely,
-    even though `abm`/`abm_visit_count` are still stored either way so the
-    raw uploaded data is always fully preserved.
+    even though `abm_code`/`abm_visit_count` are still stored either way so
+    the raw uploaded data is always fully preserved.
+
+    bm_code/abm_code (2026-08 fix) are the hierarchy's own Employee Codes
+    -- the real uploaded report's "BM Code"/"ABM Code" columns, not a name
+    -- and are the primary identity Work Distribution groups/aggregates by
+    (see app.work_distribution_service); a display name is resolved from
+    the shared hierarchy dataset (app.hierarchy_parser.find_by_employee_code),
+    never stored here. Two different real employees who happen to share a
+    name no longer collide, since the code -- not the name -- is the key.
 
     bm_visit_count/abm_visit_count are already-counted integers (see
     app/work_distribution_parser.py's month-agnostic visit-date-list
@@ -886,8 +978,8 @@ class WorkDistributionDoctor(Base):
     city = Column(String, nullable=True)
     hq = Column(String, nullable=True)
     region = Column(String, nullable=True)
-    bm = Column(String, nullable=True)
-    abm = Column(String, nullable=True)
+    bm_code = Column(String, nullable=True)
+    abm_code = Column(String, nullable=True)
     bm_visit_count = Column(Integer, nullable=False, default=0)
     abm_visit_count = Column(Integer, nullable=False, default=0)
     period_label = Column(String, nullable=True)
@@ -906,18 +998,31 @@ class WorkDistributionFinding(Base):
     ABM-eligible "A-RGD" doctors only) -- see WorkDistributionDoctor's own
     docstring.
 
-    status: "Healthy" | "Flagged" -- evaluated against the
+    status: "Healthy" | "Flagged" | "NOT YET JOINED" -- the last is set
+    instead of evaluating this employee against any threshold at all, when
+    their own DOJ (Date of Joining) falls after this upload's own period
+    month-end (see app.doj_eligibility_service) -- excluded from
+    get_dashboard_summary's average_coverage and never eligible to be
+    "Flagged". Otherwise, evaluated against the
     app.work_distribution_parameters_service thresholds in effect AT THE
     TIME OF THIS UPLOAD, the same "snapshot, not live recompute"
     convention InventoryThreshold/InventoryReplenishment already use:
     changing a KPI parameter afterward does not retroactively alter an
     already-generated finding, only the next upload does.
 
+    employee_code (2026-08 fix) is the hierarchy's own Employee Code (the
+    uploaded report's "BM Code"/"ABM Code" column) -- the real identity
+    this finding was grouped/aggregated under; employee_name is resolved
+    from the shared hierarchy for display only and is never itself used to
+    match, group, or deduplicate. Two different real employees who happen
+    to share a name are two separate rows here.
+
     Always stored on the config/main database (get_config_session())."""
 
     __tablename__ = "work_distribution_findings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_code = Column(String, nullable=True)
     employee_name = Column(String, nullable=False)
     designation = Column(String, nullable=False)  # "BM" | "ABM"
     division = Column(String, nullable=True)
@@ -1129,6 +1234,10 @@ class ManagerWorkAllocationBMDetail(Base):
     status: ABM rows use "Pass"/"Fail" (average met/missed the day
     threshold); RBM rows use "Yes"/"No" (covered/not covered) -- per each
     engine's own BM_DETAIL_HEADINGS ("Status" for ABM, "Covered" for RBM).
+    Both engines additionally use "NOT YET JOINED" when this BM's own DOJ
+    (Date of Joining) leaves no eligible retained month at all this run
+    (see app.doj_eligibility_service) -- never scored as a 0-day failure
+    or a missed BM.
 
     reason (RBM only currently; NULL for ABM rows, whose per-BM status is
     already self-explanatory via joint_days vs required_days) explains

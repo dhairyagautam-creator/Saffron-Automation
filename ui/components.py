@@ -51,7 +51,7 @@ def configure_ttk_style() -> None:
     _ttk_style_configured = True
 
 
-def styled_treeview(master, columns, headings, widths=None, height=10, scrollbars=True, **kwargs) -> ttk.Treeview:
+def styled_treeview(master, columns, headings, widths=None, height=10, scrollbars=True, style="Saffron.Treeview", **kwargs) -> ttk.Treeview:
     """Create a Treeview already themed and with headings/columns configured.
 
     With `scrollbars=True` (the default) a vertical and horizontal scrollbar
@@ -64,10 +64,18 @@ def styled_treeview(master, columns, headings, widths=None, height=10, scrollbar
     returned tree itself (typically `tree.pack(fill="both", expand=True)`)
     into the remaining area. Pass `scrollbars=False` for small fixed tables
     that always fit.
+
+    `style` defaults to the shared "Saffron.Treeview" every table in the
+    app uses (via configure_ttk_style() below) -- pass a different,
+    already-configured ttk style name for a page that needs its own look
+    (e.g. taller rows) without changing every other page's tables. The
+    caller is responsible for configuring that style (and its
+    "<style>.Heading" companion) before calling this, same as
+    configure_ttk_style() does for the default.
     """
     configure_ttk_style()
     tree = ttk.Treeview(
-        master, columns=columns, show="headings", height=height, style="Saffron.Treeview", **kwargs
+        master, columns=columns, show="headings", height=height, style=style, **kwargs
     )
     for col in columns:
         tree.heading(col, text=headings.get(col, col))

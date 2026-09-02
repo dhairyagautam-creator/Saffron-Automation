@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Hardened runtime entitlements for the notarized macOS build (see
+build_app.sh). Notarization requires the hardened runtime, and CPython,
+Tcl/Tk, and PyInstaller's bundled .dylibs need these two relaxations to run
+under it, without them the frozen app crashes on launch (or notarization
+itself rejects unsigned bundled libraries):
+  * allow-unsigned-executable-memory: CPython's ctypes/FFI and Tcl/Tk's
+    bytecode interpreter allocate executable memory at runtime, which the
+    hardened runtime blocks by default.
+  * disable-library-validation: PyInstaller bundles third-party .dylibs
+    (numpy, PIL, etc.) signed by their own vendors, not this app's Team ID;
+    hardened runtime otherwise refuses to load libraries signed by anyone
+    else.
+No network/camera/etc. entitlements are requested; this app talks to
+Supabase over plain HTTPS via Python's own sockets, which the default
+sandbox-free hardened runtime already permits.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

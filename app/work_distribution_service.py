@@ -13,7 +13,7 @@ re-flags an already-generated finding, only the next upload does.
 
 KPI rules (see the module's own spec):
 - BM: only doctors whose "Category" column normalizes to "B-RGD" (see
-  `_is_b_rgd`) AND whose "BM" column names this BM -- a "General" or
+  `_is_b_rgd`) AND whose "BM Code" column names this BM -- a "General" or
   "A-RGD" Category doctor is excluded entirely from every BM calculation
   (Total Doctors, Total Calls, Missed Doctors, Coverage %), confirmed
   against a real uploaded report: without this filter a BM's book averaged
@@ -25,10 +25,20 @@ KPI rules (see the module's own spec):
   doctors / total, as a percentage) >= its threshold, OR Poor Coverage %
   (<2-visit doctors / total, as a percentage) >= its threshold.
 - ABM: only doctors whose "ABM RGD" column normalizes to "A-RGD" (see
-  `_is_a_rgd`) AND whose "ABM" column names this ABM -- a blank or
+  `_is_a_rgd`) AND whose "ABM Code" column names this ABM -- a blank or
   non-"A-RGD" row is excluded entirely, not counted as 0 visits. Flag if
   Missed Doctors (raw count, not a percentage) >= its threshold, OR Doctors
   with <2 Visits (raw count) >= its threshold.
+
+Employee identity (2026-08 fix): a BM/ABM is grouped, aggregated, and
+deduplicated by their "BM Code"/"ABM Code" value -- the hierarchy's own
+Employee Code -- NEVER by name. Two different real employees who happen to
+share a name (e.g. two "Rahul Sharma"s with different codes) previously
+collapsed into one incorrectly-combined book; they no longer do. The
+display name shown on findings/doctor lists is resolved from the shared
+hierarchy dataset (app.hierarchy_parser.find_by_employee_code) purely for
+readability -- falls back to showing the code itself if that code has no
+hierarchy match, never blank, and is never used as a key for anything.
 
 Scope: this module ONLY parses, calculates KPIs, and generates findings.
 It does not send emails, sync to the cloud, or export -- see the module's
@@ -39,12 +49,27 @@ from datetime import datetime
 
 from loguru import logger
 
+from app.doj_eligibility_service import (
+    NOT_YET_JOINED,
+    NOT_YET_JOINED_LABEL,
+    load_doj_by_code,
+    load_doj_by_name,
+    monthly_status,
+    resolve_doj,
+)
+from app.hierarchy_parser import find_by_employee_code
+from app.manager_work_allocation_shared import parse_month
 from app.work_distribution_parameters_service import get_all as get_parameters
 from database.connection import get_config_session
 from database.models import WorkDistributionDoctor, WorkDistributionFinding
 
 STATUS_HEALTHY = "Healthy"
 STATUS_FLAGGED = "Flagged"
+# A BM/ABM whose DOJ (see app.doj_eligibility_service) falls after this
+# period's own month-end -- shown, but excluded from every aggregate
+# (get_dashboard_summary's average_coverage, and never eligible to be
+# "Flagged" since that status is never assigned to them at all).
+STATUS_NOT_YET_JOINED = NOT_YET_JOINED_LABEL
 
 FINDINGS_COLUMNS = (
     "employee_name", "designation", "division", "total_doctors", "total_calls",
@@ -91,16 +116,27 @@ def _is_b_rgd(value) -> bool:
     return _normalize_dash(value) == "B-RGD"
 
 
-def _is_vacant(name) -> bool:
-    """True if a BM/ABM name cell marks the position as vacant (e.g.
-    "Vacant_Lokesh Kumar Singh") -- mirrors app.hierarchy_parser's own
-    `_is_vacant` convention exactly (case-insensitive "vacant" substring).
-    A vacant position has no real employee behind it, so it must never be
-    evaluated as one -- confirmed against the real uploaded report: an
-    un-filtered vacant BM/ABM name produced a finding with 100% missed
-    doctors (nobody there to visit them), which is a data artifact, not a
-    real KPI violation to flag or eventually email."""
-    return bool(name) and "vacant" in str(name).lower()
+def _is_vacant(code, name: str = "") -> bool:
+    """True if a BM/ABM Code or Name cell marks the position as vacant --
+    mirrors app.hierarchy_parser's own `_is_vacant` convention exactly
+    (case-insensitive "vacant" substring). A vacant position has no real
+    employee behind it, so it must never be evaluated as one -- confirmed
+    against the real uploaded report: an un-filtered vacant BM/ABM cell
+    produced a finding with 100% missed doctors (nobody there to visit
+    them), which is a data artifact, not a real KPI violation to flag or
+    eventually email.
+
+    Checks BOTH `code` and `name` (2026-08 vacancy-detection fix): an
+    older real file embedded vacancy directly in the identity/Code value
+    itself (e.g. "Vacant_Lokesh Kumar Singh" as the BM Code), which the
+    `code` check alone still catches; the current real file instead gives
+    a vacant position an ordinary-looking Code (e.g. "V02677") and puts
+    "Vacant_<who>" in a separate BM Name/ABM Name column (see
+    app.work_distribution_parser's OPTIONAL_COLUMN_SYNONYMS) -- the `name`
+    check catches that. `name` is optional (blank on an older file with no
+    Name column) so this is purely additive, never a regression for a
+    file using the original convention."""
+    return (bool(code) and "vacant" in str(code).lower()) or (bool(name) and "vacant" in str(name).lower())
 
 
 def _combine_reasons(reasons: list) -> str:
@@ -131,7 +167,19 @@ def _first_nonblank(values):
     return None
 
 
-def _evaluate_bm(name: str, group: list, params: dict) -> dict:
+def _resolve_employee_name(code: str) -> str:
+    """Display name for a BM/ABM Employee Code, resolved from the shared
+    hierarchy dataset (the same one every other module in this app already
+    uses -- see app.hierarchy_parser.find_by_employee_code). Falls back to
+    showing the code itself when it has no hierarchy match, never blank --
+    this is display only; the code, never this name, is what
+    matching/grouping/aggregation/deduplication use."""
+    row = find_by_employee_code(code)
+    return row["employee_name"] if row and row.get("employee_name") else code
+
+
+def _evaluate_bm(code: str, group: list, params: dict) -> dict:
+    name = _resolve_employee_name(code)
     total_doctors = len(group)
     total_calls = sum(d["bm_visit_count"] for d in group)
     missed = sum(1 for d in group if d["bm_visit_count"] == 0)
@@ -148,6 +196,7 @@ def _evaluate_bm(name: str, group: list, params: dict) -> dict:
         reasons.append("Coverage below minimum")
 
     return {
+        "employee_code": code,
         "employee_name": name,
         "designation": "BM",
         "division": _first_nonblank(d["division"] for d in group),
@@ -160,7 +209,8 @@ def _evaluate_bm(name: str, group: list, params: dict) -> dict:
     }
 
 
-def _evaluate_abm(name: str, group: list, params: dict) -> dict:
+def _evaluate_abm(code: str, group: list, params: dict) -> dict:
+    name = _resolve_employee_name(code)
     total_doctors = len(group)
     total_calls = sum(d["abm_visit_count"] for d in group)
     missed = sum(1 for d in group if d["abm_visit_count"] == 0)
@@ -173,6 +223,7 @@ def _evaluate_abm(name: str, group: list, params: dict) -> dict:
         reasons.append("Coverage below minimum")
 
     return {
+        "employee_code": code,
         "employee_name": name,
         "designation": "ABM",
         "division": _first_nonblank(d["division"] for d in group),
@@ -182,6 +233,28 @@ def _evaluate_abm(name: str, group: list, params: dict) -> dict:
         "poor_coverage_doctors": poor_coverage,
         "status": STATUS_FLAGGED if reasons else STATUS_HEALTHY,
         "reason": _combine_reasons(reasons),
+    }
+
+
+def _not_yet_joined_finding(code: str, designation: str, group: list) -> dict:
+    """A finding for a BM/ABM whose own DOJ is after this period's
+    month-end (see app.doj_eligibility_service) -- shown, exactly like any
+    other employee, but never evaluated against the KPI thresholds (there
+    is no real activity to judge yet) and excluded from every aggregate
+    that reads WorkDistributionFinding.status (see get_dashboard_summary's
+    average_coverage; the notification batch's own "status != Flagged"
+    filter already skips this status for free)."""
+    return {
+        "employee_code": code,
+        "employee_name": _resolve_employee_name(code),
+        "designation": designation,
+        "division": _first_nonblank(d["division"] for d in group),
+        "total_doctors": len(group),
+        "total_calls": 0,
+        "missed_doctors": 0,
+        "poor_coverage_doctors": 0,
+        "status": STATUS_NOT_YET_JOINED,
+        "reason": "Not yet joined as of this period.",
     }
 
 
@@ -195,13 +268,48 @@ def process_work_distribution_report(doctors: list) -> dict:
     """
     params = get_parameters()
 
-    bm_eligible = [d for d in doctors if d["bm"] and not _is_vacant(d["bm"]) and _is_b_rgd(d["category"])]
-    bm_groups = _group_by(bm_eligible, lambda d: d["bm"])
-    abm_eligible = [d for d in doctors if d["abm"] and not _is_vacant(d["abm"]) and _is_a_rgd(d["abm_rgd"])]
-    abm_groups = _group_by(abm_eligible, lambda d: d["abm"])
+    bm_eligible = [
+        d for d in doctors
+        if d["bm_code"] and not _is_vacant(d["bm_code"], d.get("bm_name")) and _is_b_rgd(d["category"])
+    ]
+    bm_groups = _group_by(bm_eligible, lambda d: d["bm_code"])
+    abm_eligible = [
+        d for d in doctors
+        if d["abm_code"] and not _is_vacant(d["abm_code"], d.get("abm_name")) and _is_a_rgd(d["abm_rgd"])
+    ]
+    abm_groups = _group_by(abm_eligible, lambda d: d["abm_code"])
 
-    findings = [_evaluate_bm(name, group, params) for name, group in bm_groups.items()]
-    findings += [_evaluate_abm(name, group, params) for name, group in abm_groups.items()]
+    # This period's own (year, month), from the same "BM Visit <Month>"
+    # header text app.work_distribution_parser already reduces to
+    # period_label -- reusing app.manager_work_allocation_shared's own
+    # month parser rather than a second copy (it already tolerates every
+    # real-world spelling this report uses). None if it can't be
+    # determined, in which case monthly_status() below always returns
+    # ACTIVE -- DOJ eligibility is a no-op rather than a guess.
+    period = parse_month(doctors[0]["period_label"]) if doctors else None
+    period_year, period_month = (period[0], period[1]) if period else (None, None)
+    # Code-first, name-fallback -- same resolve_doj() Manager Work
+    # Allocation's own ABM/RBM engines already use, now that BM/ABM Code
+    # is available here too (2026-08 fix; previously this could only ever
+    # look up by name, the same collision risk being fixed everywhere else
+    # in this module).
+    doj_by_code = load_doj_by_code()
+    doj_by_name = load_doj_by_name()
+
+    def _doj_status(code: str) -> str:
+        doj = resolve_doj(code, _resolve_employee_name(code), doj_by_code, doj_by_name)
+        return monthly_status(doj, period_year, period_month)
+
+    findings = [
+        _not_yet_joined_finding(code, "BM", group) if _doj_status(code) == NOT_YET_JOINED
+        else _evaluate_bm(code, group, params)
+        for code, group in bm_groups.items()
+    ]
+    findings += [
+        _not_yet_joined_finding(code, "ABM", group) if _doj_status(code) == NOT_YET_JOINED
+        else _evaluate_abm(code, group, params)
+        for code, group in abm_groups.items()
+    ]
 
     now = datetime.now()
     session = get_config_session()
@@ -225,8 +333,8 @@ def process_work_distribution_report(doctors: list) -> dict:
                 city=doctor["city"] or None,
                 hq=doctor["hq"] or None,
                 region=doctor["region"] or None,
-                bm=doctor["bm"] or None,
-                abm=doctor["abm"] or None,
+                bm_code=doctor["bm_code"] or None,
+                abm_code=doctor["abm_code"] or None,
                 bm_visit_count=doctor["bm_visit_count"],
                 abm_visit_count=doctor["abm_visit_count"],
                 period_label=doctor.get("period_label") or None,
@@ -235,6 +343,7 @@ def process_work_distribution_report(doctors: list) -> dict:
 
         for finding in findings:
             session.add(WorkDistributionFinding(
+                employee_code=finding["employee_code"] or None,
                 employee_name=finding["employee_name"],
                 designation=finding["designation"],
                 division=finding["division"],
@@ -270,7 +379,11 @@ def process_work_distribution_report(doctors: list) -> dict:
 
 def get_all_findings() -> list:
     """Every employee's finding, shaped for the Findings page's table --
-    see FINDINGS_COLUMNS/FINDINGS_HEADINGS above."""
+    see FINDINGS_COLUMNS/FINDINGS_HEADINGS above. Also carries
+    `employee_code` (not one of FINDINGS_COLUMNS, so it's never rendered
+    as a table column) for callers like the Employee Details page that
+    need the real identity, not just the display name -- see
+    get_employee_doctors below."""
     session = get_config_session()
     try:
         rows = session.query(WorkDistributionFinding).order_by(
@@ -278,6 +391,7 @@ def get_all_findings() -> list:
         ).all()
         return [
             {
+                "employee_code": r.employee_code or "",
                 "employee_name": r.employee_name,
                 "designation": r.designation,
                 "division": r.division or "",
@@ -327,14 +441,16 @@ def get_dashboard_summary() -> dict:
     total_employees = len(findings)
     flagged = sum(1 for f in findings if f.status == STATUS_FLAGGED)
 
-    if total_employees:
-        coverage_values = [
-            ((f.total_doctors - f.poor_coverage_doctors) / f.total_doctors * 100) if f.total_doctors else 0.0
-            for f in findings
-        ]
-        average_coverage = sum(coverage_values) / len(coverage_values)
-    else:
-        average_coverage = 0.0
+    # A "NOT YET JOINED" employee (see app.doj_eligibility_service) has no
+    # real coverage to average in -- excluded here entirely rather than
+    # counted as a 0%, per that module's own rule. Still counted in
+    # total_employees above (a headcount, not a performance aggregate).
+    coverage_values = [
+        ((f.total_doctors - f.poor_coverage_doctors) / f.total_doctors * 100) if f.total_doctors else 0.0
+        for f in findings
+        if f.status != STATUS_NOT_YET_JOINED
+    ]
+    average_coverage = sum(coverage_values) / len(coverage_values) if coverage_values else 0.0
 
     return {
         "total_employees": total_employees,
@@ -344,11 +460,13 @@ def get_dashboard_summary() -> dict:
     }
 
 
-def get_employee_doctors(employee_name: str, designation: str) -> list:
+def get_employee_doctors(employee_code: str, designation: str) -> list:
     """The doctor list for one employee's own book, for the Employee
-    Details page -- BM sees only the B-RGD-eligible doctors whose "BM"
+    Details page -- BM sees only the B-RGD-eligible doctors whose "BM Code"
     column names them; ABM sees only the A-RGD-eligible doctors whose
-    "ABM" column names them. Mirrors process_work_distribution_report's own
+    "ABM Code" column names them. Matched by Employee Code (2026-08 fix,
+    not name -- two different real employees sharing a name must never
+    show the same book). Mirrors process_work_distribution_report's own
     grouping rule exactly (same `_is_b_rgd`/`_is_a_rgd` eligibility checks),
     so this always matches the finding already generated for this employee
     -- its own total_doctors count. visit_count/status use that
@@ -359,7 +477,7 @@ def get_employee_doctors(employee_name: str, designation: str) -> list:
         if designation == "ABM":
             rows = [
                 r for r in session.query(WorkDistributionDoctor).filter(
-                    WorkDistributionDoctor.abm == employee_name
+                    WorkDistributionDoctor.abm_code == employee_code
                 ).all()
                 if _is_a_rgd(r.abm_rgd)
             ]
@@ -367,7 +485,7 @@ def get_employee_doctors(employee_name: str, designation: str) -> list:
         else:
             rows = [
                 r for r in session.query(WorkDistributionDoctor).filter(
-                    WorkDistributionDoctor.bm == employee_name
+                    WorkDistributionDoctor.bm_code == employee_code
                 ).all()
                 if _is_b_rgd(r.category)
             ]

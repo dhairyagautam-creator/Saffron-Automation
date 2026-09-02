@@ -3,9 +3,11 @@ Phase 5. Reuses the existing shared infrastructure throughout, per explicit
 instruction, rather than building a new email framework:
 - app/smtp_service.py for the actual SMTP send (Path Validator's own
   sending module, already module-agnostic -- extended, not duplicated).
-- app/work_distribution_email_settings_service.py for this module's own
-  Gmail sender credentials (already built, Email Center page already wired
-  to it).
+- app/email_settings_service.py for the Gmail sender credentials -- the
+  same single account used by the rest of the application's email
+  functionality, not a separate Work Distribution account (see
+  send_notification_batch). app/work_distribution_email_settings_service.py
+  still owns only this module's automatic-sending trigger flag.
 - app/hierarchy_parser.py / app/hierarchy_service.py for hierarchy lookups
   (find_by_employee_name/find_by_employee_code/find_by_designation,
   is_valid_recipient) -- there is exactly one hierarchy dataset in the
@@ -13,6 +15,13 @@ instruction, rather than building a new email framework:
 - app/work_distribution_email_template.py for HTML/text rendering (this
   module's own presentation layer, mirroring app/email_template.py's brand
   colors/skeleton).
+- app/table_export_service.py for the actual Excel-writing (Milestone 57,
+  2026-08-27): each flagged employee's own Doctor List (RGD Coverage) or
+  BM Monthly Trend (Manager Work Allocation) is attached to the recipient's
+  email as a real file -- see _doctor_list_attachment/
+  _monthly_trend_attachment. One attachment per flagged employee per
+  reason, never one combined file per recipient; the HTML/text body itself
+  is completely unchanged by this.
 
 Only FLAGGED employees are ever included -- a Healthy/Pass finding never
 reaches this module's output. Recipients are resolved automatically from
@@ -72,11 +81,16 @@ function here only READS already-computed findings/records and RENDERS
 them; no finding's status/reason is ever recomputed here.
 """
 
+import os
+import re
+import tempfile
 from collections import Counter
 from datetime import datetime
 
 from loguru import logger
 
+from app.doj_eligibility_service import NOT_YET_JOINED_LABEL
+from app.email_settings_service import get_settings
 from app.hierarchy_parser import find_by_designation, find_by_employee_code, find_by_employee_name
 from app.hierarchy_service import is_valid_recipient
 from app.manager_work_allocation_parameters_service import get_all as get_mwa_parameters, get_rbm_flag_tiers
@@ -93,10 +107,14 @@ from app.manager_work_allocation_service import (
     get_employee_bm_monthly_history as get_abm_employee_bm_monthly_history,
 )
 from app.smtp_service import open_smtp_connection, send_via_connection
-from app.work_distribution_email_settings_service import get_settings
+from app.table_export_service import write_rows_to_excel
 from app.work_distribution_email_template import render_html, render_text
 from app.work_distribution_parameters_service import get_all as get_rgd_parameters
-from app.work_distribution_service import get_all_findings as get_all_rgd_findings, get_current_period_label
+from app.work_distribution_service import (
+    get_all_findings as get_all_rgd_findings,
+    get_current_period_label,
+    get_employee_doctors,
+)
 from database.connection import get_config_session
 from database.models import ManagerWorkAllocationRecord, WorkDistributionDoctor, WorkDistributionEmailNotification
 
@@ -123,6 +141,94 @@ MANAGER_WORK_ALLOCATION_CHAINS = {
 # employee's own hierarchy row (abm_code/abm_name, rbm_code/rbm_name) --
 # same convention as app.hierarchy_service.DIRECTLY_ASSIGNED_LEVELS.
 _DIRECT_LEVELS = {"ABM", "RBM"}
+
+# Same shape as ui.work_distribution_employee_details_page's own
+# DOCTOR_LIST_COLUMNS/HEADINGS -- duplicated (not imported) since that
+# module is UI-layer (imports customtkinter) and this one must stay
+# importable headlessly; both feed the exact same
+# app.work_distribution_service.get_employee_doctors() data into
+# app.table_export_service.write_rows_to_excel(), so the attachment
+# matches that page's own Doctor List/Export output exactly.
+_DOCTOR_LIST_COLUMNS = ("doctor_code", "doctor_name", "division", "city", "visit_count", "status")
+_DOCTOR_LIST_HEADINGS = {
+    "doctor_code": "Doctor Code",
+    "doctor_name": "Doctor Name",
+    "division": "Division",
+    "city": "City",
+    "visit_count": "Visit Count",
+    "status": "Status",
+}
+
+_FILENAME_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _attachment_filename(employee_name: str, reason_label: str) -> str:
+    """"<Employee Name> - <Reason>.xlsx" -- unlike
+    app.table_export_service.default_export_filename (which strips every
+    non-alphanumeric character for a UI Save-As default), this only
+    strips the characters Windows itself forbids in a filename, so the
+    name and reason stay readable in an inbox's attachment list, per this
+    feature's own explicit naming requirement."""
+    raw = f"{employee_name} - {reason_label}"
+    safe = _FILENAME_UNSAFE_CHARS.sub("", raw).strip()
+    return f"{safe or 'Employee'}.xlsx"
+
+
+def _rows_to_xlsx_bytes(rows: list[dict], columns: tuple, headings: dict, sheet_title: str) -> bytes:
+    """Writes `rows` through the SAME app.table_export_service.
+    write_rows_to_excel() every other export in this app uses -- that
+    writer is disk-path-based, not bytes-based, so this only adds a
+    temp-file round-trip around it (never a second Excel-writing
+    routine) to get the bytes an email attachment needs."""
+    fd, tmp_path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    try:
+        write_rows_to_excel(rows, columns, headings, tmp_path, sheet_title=sheet_title)
+        with open(tmp_path, "rb") as f:
+            return f.read()
+    finally:
+        os.unlink(tmp_path)
+
+
+def _doctor_list_attachment(employee_code: str, employee_name: str, designation: str) -> tuple[str, bytes]:
+    """(filename, bytes) for one flagged BM's/ABM's own Doctor List --
+    reuses app.work_distribution_service.get_employee_doctors() (the
+    exact data source the Employee Details page's own Doctor List table
+    uses; no second calculation pipeline)."""
+    doctors = get_employee_doctors(employee_code, designation)
+    file_bytes = _rows_to_xlsx_bytes(doctors, _DOCTOR_LIST_COLUMNS, _DOCTOR_LIST_HEADINGS, "Doctor List")
+    return _attachment_filename(employee_name, "RGD Coverage"), file_bytes
+
+
+def _monthly_trend_attachment(history: dict, employee_name: str, status_heading: str) -> tuple[str, bytes] | None:
+    """(filename, bytes) for one flagged ABM's/RBM's own BM Monthly Trend
+    -- reuses the already-computed `history` dict (from
+    get_abm_employee_bm_monthly_history()/get_rbm_employee_bm_monthly_history(),
+    the same data ui.work_distribution_employee_details_page's own
+    _build_monthly_trend_card renders) and mirrors that page's exact row
+    shape -- dynamic month columns, NOT_YET_JOINED_LABEL substitution
+    included -- so the attachment matches what the manager would see
+    on-screen. None if this employee currently has no BMs at all (nothing
+    to attach)."""
+    months = history.get("months") or []
+    bms = history.get("bms") or []
+    if not bms:
+        return None
+
+    columns = ("subordinate_name", *months, "average", "status")
+    headings = {"subordinate_name": "BM Name", "average": "Average", "status": status_heading}
+    headings.update({m: m for m in months})
+
+    rows = []
+    for bm in bms:
+        not_yet_joined_months = bm.get("not_yet_joined_months", ())
+        row = {"subordinate_name": bm["subordinate_name"], "average": bm["average"], "status": bm["status"]}
+        for m in months:
+            row[m] = NOT_YET_JOINED_LABEL if m in not_yet_joined_months else bm["monthly"].get(m, "")
+        rows.append(row)
+
+    file_bytes = _rows_to_xlsx_bytes(rows, columns, headings, "BM Monthly Trend")
+    return _attachment_filename(employee_name, "Manager Work Allocation"), file_bytes
 
 
 # --- Hierarchy resolution ------------------------------------------------
@@ -158,12 +264,21 @@ def _resolve_chain(hierarchy_row: dict, chain: list) -> list:
 
 # --- HQ derivation (see module docstring's "Known data gap") -------------
 
-def _rgd_hq_for(designation: str, employee_name: str) -> str:
-    column = WorkDistributionDoctor.bm if designation == "BM" else WorkDistributionDoctor.abm
+def _rgd_hq_for(designation: str, employee_code: str) -> str:
+    """Pre-existing bug fix (found while implementing Milestone 57, not
+    caused by it): this filtered by `bm`/`abm` (name columns dropped by
+    the 2026-08 BM/ABM Code migration -- see WorkDistributionDoctor's own
+    docstring) and by NAME, when the doctor rows have been keyed by CODE
+    ever since. Every real RGD Coverage notification has been raising
+    AttributeError here since that migration landed -- restoring the
+    already-migrated bm_code/abm_code columns and the code-based lookup
+    is what makes RGD notifications (attachments or not) work at all
+    again; no identity/aggregation logic changed."""
+    column = WorkDistributionDoctor.bm_code if designation == "BM" else WorkDistributionDoctor.abm_code
     session = get_config_session()
     try:
         rows = session.query(WorkDistributionDoctor.hq).filter(
-            column == employee_name, WorkDistributionDoctor.hq.isnot(None)
+            column == employee_code, WorkDistributionDoctor.hq.isnot(None)
         ).all()
     finally:
         session.close()
@@ -233,7 +348,7 @@ def _build_rgd_bm_employee(finding: dict, hierarchy_row: dict | None, params: di
         "employee_code": hierarchy_row.get("employee_code", "") if hierarchy_row else "",
         "designation": "BM",
         "division": finding["division"] or "",
-        "hq": _rgd_hq_for("BM", finding["employee_name"]),
+        "hq": _rgd_hq_for("BM", finding["employee_code"]),
         "analysis_period": period_label,
         "module": "RGD Coverage",
         "reason": finding["reason"],
@@ -251,6 +366,12 @@ def _build_rgd_bm_employee(finding: dict, hierarchy_row: dict | None, params: di
             "Review this BM's territory coverage plan and schedule additional field visits "
             "to underperforming doctors."
         ),
+        # RGD Coverage's own BM Code (WorkDistributionFinding.employee_code,
+        # the same identity get_employee_doctors() groups doctor rows by) --
+        # NOT hierarchy_row's own code above, which is a separate,
+        # name-matched hierarchy lookup that may not agree. This is what the
+        # Doctor List attachment below is actually fetched by.
+        "attachment": _doctor_list_attachment(finding["employee_code"], finding["employee_name"], "BM"),
     }
 
 
@@ -260,7 +381,7 @@ def _build_rgd_abm_employee(finding: dict, hierarchy_row: dict | None, params: d
         "employee_code": hierarchy_row.get("employee_code", "") if hierarchy_row else "",
         "designation": "ABM",
         "division": finding["division"] or "",
-        "hq": _rgd_hq_for("ABM", finding["employee_name"]),
+        "hq": _rgd_hq_for("ABM", finding["employee_code"]),
         "analysis_period": period_label,
         "module": "RGD Coverage",
         "reason": finding["reason"],
@@ -275,6 +396,7 @@ def _build_rgd_abm_employee(finding: dict, hierarchy_row: dict | None, params: d
         "recommended_action": (
             "Review this ABM's territory coverage and doctor engagement plan; escalate persistent gaps."
         ),
+        "attachment": _doctor_list_attachment(finding["employee_code"], finding["employee_name"], "ABM"),
     }
 
 
@@ -286,6 +408,11 @@ def _build_mwa_abm_employee(finding: dict, hierarchy_row: dict | None, params: d
         f"{params['minimum_joint_working_days']:.0f} joint working days per month."
         if bm_details else "One or more BMs did not meet the required joint working days."
     )
+    # One shared fetch -- feeds both the email's own compact trend line
+    # (_average_monthly_trend) and the full BM Monthly Trend attachment
+    # below, rather than calling get_abm_employee_bm_monthly_history()
+    # twice for the same employee.
+    monthly_history = get_abm_employee_bm_monthly_history(finding["employee_name"])
     return {
         "employee_name": finding["employee_name"],
         "employee_code": hierarchy_row.get("employee_code", "") if hierarchy_row else "",
@@ -301,14 +428,17 @@ def _build_mwa_abm_employee(finding: dict, hierarchy_row: dict | None, params: d
             ("Failed BMs", str(finding["failed_bms"])),
         ],
         "required_threshold": f"Minimum {params['minimum_joint_working_days']:.0f} joint working days/month average per BM",
-        "monthly_trend": _average_monthly_trend(get_abm_employee_bm_monthly_history(finding["employee_name"])),
+        "monthly_trend": _average_monthly_trend(monthly_history),
         "recommended_action": (
             "Review joint working schedules with underperforming BMs and realign field coverage plans."
         ),
+        "attachment": _monthly_trend_attachment(monthly_history, finding["employee_name"], "Status"),
     }
 
 
 def _build_mwa_rbm_employee(finding: dict, hierarchy_row: dict | None, period_label: str) -> dict:
+    # One shared fetch -- see _build_mwa_abm_employee's own comment.
+    monthly_history = get_rbm_employee_bm_monthly_history(finding["employee_name"])
     return {
         "employee_name": finding["employee_name"],
         "employee_code": hierarchy_row.get("employee_code", "") if hierarchy_row else "",
@@ -325,7 +455,8 @@ def _build_mwa_rbm_employee(finding: dict, hierarchy_row: dict | None, period_la
             ("Coverage %", str(finding["coverage_percent"])),
         ],
         "required_threshold": _rbm_tier_threshold_text(finding["total_bms"]),
-        "monthly_trend": _average_monthly_trend(get_rbm_employee_bm_monthly_history(finding["employee_name"])),
+        "monthly_trend": _average_monthly_trend(monthly_history),
+        "attachment": _monthly_trend_attachment(monthly_history, finding["employee_name"], "Covered"),
         "recommended_action": (
             "Review missed BM coverage with this RBM and confirm a joint-working plan for the next cycle."
         ),
@@ -343,7 +474,10 @@ def build_notification_batch() -> list:
     more than one module gets one card with multiple `reasons` entries, not
     one card per module (see module docstring's GROUPING section). Returns
     a list of drafts: {recipient_name, recipient_email, employees,
-    employee_count, subject, body, text_body, status}."""
+    employee_count, subject, body, text_body, attachments, status}.
+    `attachments` is a flat list of (filename, bytes) pairs -- one per
+    flagged employee per reason (see _doctor_list_attachment/
+    _monthly_trend_attachment), never merged into a single combined file."""
     rgd_params = get_rgd_parameters()
     mwa_params = get_mwa_parameters()
     rgd_period = get_current_period_label()
@@ -371,6 +505,13 @@ def build_notification_batch() -> list:
             "required_threshold": employee.get("required_threshold", ""),
             "monthly_trend": employee.get("monthly_trend"),
             "recommended_action": employee.get("recommended_action", ""),
+            # (filename, bytes) for this employee's own Doctor List (RGD
+            # Coverage) or BM Monthly Trend (Manager Work Allocation) -- see
+            # _doctor_list_attachment/_monthly_trend_attachment. Computed
+            # once per employee, reused as-is for every recipient this same
+            # employee routes to (e.g. an RGD BM's finding is attached
+            # identically to both their ABM's and RBM's email).
+            "attachment": employee.get("attachment"),
         }
 
         key = employee.get("employee_code") or employee["employee_name"].strip().lower()
@@ -475,6 +616,14 @@ def build_notification_batch() -> list:
         # "Sections" column -- purely descriptive text, not a grouping key
         # anymore (see WorkDistributionEmailNotification's own docstring).
         modules_summary = ", ".join(sorted({r["module"] for e in employees for r in e["reasons"]}))
+        # One attachment per flagged employee per reason -- never merged
+        # into a single combined file, and never deduplicated across
+        # employees (each is that specific person's own Doctor List/BM
+        # Monthly Trend). A reason with no attachment (e.g. a monthly-trend
+        # fetch that came back empty) is simply skipped, not a blank entry.
+        attachments = [
+            r["attachment"] for e in employees for r in e["reasons"] if r.get("attachment")
+        ]
         drafts.append({
             "recipient_name": group["name"],
             "recipient_email": email,
@@ -487,6 +636,7 @@ def build_notification_batch() -> list:
             ),
             "body": render_html(group["name"], now_text, employees),
             "text_body": render_text(group["name"], now_text, employees),
+            "attachments": attachments,
             "status": STATUS_DRAFT,
         })
     return drafts
@@ -529,6 +679,7 @@ def send_notification_batch(drafts: list, progress_callback=None) -> dict:
                 send_via_connection(
                     connection, sender_email, draft["recipient_email"],
                     draft["subject"], draft["body"], draft.get("text_body"),
+                    draft.get("attachments"),
                 )
             except Exception as exc:
                 logger.error(f"Failed to send Work Distribution notification to {draft['recipient_email']}: {exc}")

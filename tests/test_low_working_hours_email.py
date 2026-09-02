@@ -46,7 +46,10 @@ def _hr(fid, code, name):
 def _build(findings):
     contexts = {f.finding_id: {"hq": "HQ1", "region": None, "coordinates": []} for f in findings}
     designations = {f.finding_id: "BM" for f in findings}
-    addresses = {f.employee_name: ["12 MG Road, Pune"] for f in findings}
+    addresses = {
+        f.employee_name: [{"doctor": "Dr. Test", "address": "12 MG Road, Pune", "flagged": False}]
+        for f in findings
+    }
     return _build_consolidated_email("RBM One", findings, contexts, designations, addresses)
 
 
@@ -55,7 +58,7 @@ def test_location_only():
     assert distinct == 1
     assert "Working Hours" not in html
     assert "Combined interpretation" not in html
-    assert "Location" in html and "Frequent Visit Locations" in html
+    assert "Location" in html and "Visit Records" in html
 
 
 def test_hours_only():
@@ -64,7 +67,7 @@ def test_hours_only():
     assert "Working Hours" in html
     assert "First call: 10:15" in html and "Short by: 1h 20m" in html
     assert "Combined interpretation" not in html
-    assert "Frequent Visit Locations" not in html  # HR-only: no location block
+    assert "Visit Records" not in html  # HR-only: no location block
 
 
 def test_both_one_employee():

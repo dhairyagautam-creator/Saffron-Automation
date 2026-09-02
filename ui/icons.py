@@ -428,6 +428,12 @@ _ICON_FUNCS = {
     "Work Distribution": icon_calendar_check,
     "Upload": icon_upload,
     "Employee Details": icon_person,
+    # Review System (scaffold) -- reuses existing glyphs rather than drawing
+    # new ones, same reasoning as "Excess Inventory"/"Master" above.
+    "Review System": icon_table,
+    "File Preview": icon_table,
+    "All Top Performers": icon_dashboard,
+    "Hierarchy and HQ Distribution": icon_hierarchy,
 }
 
 

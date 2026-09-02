@@ -6,6 +6,7 @@ import customtkinter as ctk
 from loguru import logger
 
 from app.feature_flags_service import ensure_flag_defaults
+from app.inventory_factory_reset import run_inventory_factory_reset_if_needed
 from app.inventory_parameters_service import ensure_defaults as ensure_inventory_parameter_defaults
 from app.logging_config import configure_logging
 from app.manager_work_allocation_parameters_service import (
@@ -90,6 +91,13 @@ def main() -> None:
     try:
         init_db()
         run_startup_migrations()
+        # Must run here: after the migration above (so the marker column
+        # already exists) and strictly before MainWindow()/app.mainloop()
+        # below, which is also before any sync poller or other Inventory
+        # sync activity starts -- see app/inventory_factory_reset.py's own
+        # module docstring for why that ordering is what makes this safe
+        # against a stale-data race.
+        run_inventory_factory_reset_if_needed()
         ensure_defaults()
         ensure_payment_parameter_defaults()
         ensure_inventory_parameter_defaults()

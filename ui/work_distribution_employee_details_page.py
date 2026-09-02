@@ -7,9 +7,13 @@ reason -- no re-lookup needed for those) and separately queries
 app.work_distribution_service.get_employee_doctors() for that employee's
 real doctor list.
 
-No Employee Code / Email fields -- the uploaded report carries neither for
-a BM/ABM, so nothing here is fabricated to fill an "Employee Information"
-card that used to show placeholder values in the UI-only phase.
+No Email field -- the uploaded report carries none for a BM/ABM, so
+nothing here is fabricated to fill an "Employee Information" card that
+used to show placeholder values in the UI-only phase. Employee Code IS
+now available (2026-08 BM/ABM Code fix) and is used internally to fetch
+the right doctor list (see get_employee_doctors's own real identity, not
+name, argument) -- it is not itself added as a new displayed field here,
+that being outside this fix's own scope.
 
 Version 2.1 architecture update: a TabBar (see ui.components.TabBar) now
 sits above the content -- "RGD Coverage" is this exact page, UNCHANGED.
@@ -31,7 +35,13 @@ from app.manager_work_allocation_service.get_employee_bm_monthly_history()
 changes over time (see those functions' own docstrings for the exact
 shape). A BM with no record for a given retained month shows a blank cell
 for that month rather than a zero, per the module's own spec ("collect
-every monthly record" -- never invented).
+every monthly record" -- never invented). A month that DOES have a
+    record but is excluded by that BM's own DOJ (2026-08 presentation fix)
+    shows the literal text NOT_YET_JOINED_LABEL instead -- both functions'
+    "not_yet_joined_months" set already names exactly which months those
+    are (see their own docstrings for why that's a separate key from
+    "monthly"); this page just checks membership in that set, no separate
+    DOJ check of its own.
 
 `load_employee(row)` routes on `row.get("_engine")` -- "mwa" (stamped by
 ui/work_distribution_findings_page.py's own `_on_mwa_view_details_clicked`
@@ -47,6 +57,7 @@ before.
 
 import customtkinter as ctk
 
+from app.doj_eligibility_service import NOT_YET_JOINED_LABEL
 from app.manager_work_allocation_rbm_service import (
     get_employee_bm_monthly_history as get_rbm_employee_bm_monthly_history,
 )
@@ -313,7 +324,10 @@ class WorkDistributionEmployeeDetailsPage(ctk.CTkFrame):
         fresh from `history["months"]` every render, never a fixed tuple,
         since which months are in the window changes over time. A BM with
         no record for a given retained month shows a blank cell for that
-        month, never an invented zero."""
+        month, never an invented zero. A month that DOES have a record but
+        that BM's own DOJ excludes (per `bm["not_yet_joined_months"]`,
+        2026-08 presentation fix) shows NOT_YET_JOINED_LABEL instead of a
+        blank cell."""
         card = Card(outer)
         card.pack(fill="both", expand=True)
 
@@ -353,9 +367,13 @@ class WorkDistributionEmployeeDetailsPage(ctk.CTkFrame):
         export_rows = []
         for bm in bms:
             tag = status_tag_map.get(bm["status"])
+            not_yet_joined_months = bm.get("not_yet_joined_months", ())
             row_values = (
                 bm["subordinate_name"],
-                *(bm["monthly"].get(m, "") for m in months),
+                *(
+                    NOT_YET_JOINED_LABEL if m in not_yet_joined_months else bm["monthly"].get(m, "")
+                    for m in months
+                ),
                 bm["average"],
                 bm["status"],
             )
@@ -470,7 +488,7 @@ class WorkDistributionEmployeeDetailsPage(ctk.CTkFrame):
         )
         self.doctor_list_export_button.pack(side="right")
 
-        doctors = get_employee_doctors(employee["employee_name"], employee["designation"])
+        doctors = get_employee_doctors(employee["employee_code"], employee["designation"])
         self._doctor_list_rows = doctors
         if not doctors:
             EmptyState(body, "No doctors found for this employee.").pack(fill="both", expand=True)

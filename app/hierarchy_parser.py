@@ -39,6 +39,7 @@ module's docstring for the full rule.
 """
 
 import re
+import warnings
 
 import openpyxl
 import pandas as pd
@@ -57,6 +58,13 @@ HIERARCHY_COLUMNS = [
     "designation",
     "mobile",
     "email",
+    # Date of Joining, normalized to an ISO 'YYYY-MM-DD' string (or "" if
+    # blank/unparseable) at parse time -- see _doj_cell() below. The
+    # canonical source app.doj_eligibility_service reads (via
+    # get_all_doj()/get_doj_by_name() further down this file) to decide
+    # whether Work Distribution (RGD Coverage + Manager Work Allocation)
+    # should treat this employee as active during a given month.
+    "doj",
     # Raw, per-employee direct assignments -- internal inputs to
     # app.hierarchy_service's fallback walk. Not displayed anywhere
     # (superseded by senior_* below); ABM/RBM are the only two rungs
@@ -98,6 +106,7 @@ COLUMN_CANDIDATES = {
     "designation": ["Designation", "Desig.", "Desig"],
     "mobile": ["Mobile", "Mobile Number", "Phone", "Contact Number"],
     "email": ["Email-Id", "Email Id", "Email", "Email Address", "E-mail", "E-mail Address"],
+    "doj": ["DOJ", "Date of Joining", "Date Of Joining", "Joining Date", "DOJ Date"],
 }
 REQUIRED_HEADER_FIELDS = ("employee_code", "employee_name", "designation")
 
@@ -149,6 +158,34 @@ def _is_vacant(employee_name: str | None) -> bool:
     return bool(employee_name) and "vacant" in employee_name.lower()
 
 
+def _doj_cell(row: list, column_map: dict) -> str:
+    """Like _cell(), but for the "doj" column specifically -- normalizes
+    to an ISO 'YYYY-MM-DD' string instead of the generic str(value) every
+    other field gets, since app.doj_eligibility_service needs to parse
+    this back into a date on every read. An Excel date cell arrives here
+    as a python date/datetime (openpyxl, data_only=True); a plain string
+    cell (e.g. "15-04-2026", "15/04/2026") is tolerated too via pandas.
+    dayfirst=True assumes the DD-MM-YYYY convention this company's other
+    data already uses (see e.g. app.manager_work_allocation_shared's own
+    "Feb-26" real-report precedent) when the day/month can't otherwise be
+    told apart. "" if blank or unparseable -- never guessed at; that's
+    treated identically to "no DOJ on file" downstream (see
+    app.doj_eligibility_service's own docstring for why)."""
+    idx = column_map.get("doj")
+    if idx is None or idx >= len(row):
+        return ""
+    value = row[idx]
+    if value is None:
+        return ""
+    with warnings.catch_warnings():
+        # Silences pandas' "dayfirst=True was specified" notice for the
+        # (common, unambiguous) ISO-format cells -- dayfirst only ever
+        # matters for the genuinely ambiguous DD/MM vs MM/DD case anyway.
+        warnings.simplefilter("ignore", UserWarning)
+        parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
+    return "" if pd.isna(parsed) else parsed.date().isoformat()
+
+
 def _parse_sheet(grid: list, workbook_name: str, sheet_name: str) -> tuple[list, dict]:
     """Walk one sheet top to bottom, tracking the current RBM/ABM as
     described in the module docstring. Returns (records, stats) where
@@ -193,6 +230,7 @@ def _parse_sheet(grid: list, workbook_name: str, sheet_name: str) -> tuple[list,
         designation = (designation_raw or "").strip().upper()
         mobile = _cell(row, column_map, "mobile")
         email = _cell(row, column_map, "email")
+        doj = _doj_cell(row, column_map)
 
         if designation in RBM_DESIGNATIONS:
             current_rbm = {"code": employee_code, "name": employee_name}
@@ -221,6 +259,7 @@ def _parse_sheet(grid: list, workbook_name: str, sheet_name: str) -> tuple[list,
                 "designation": designation,
                 "mobile": mobile,
                 "email": email,
+                "doj": doj,
                 "abm_code": abm_code,
                 "abm_name": abm_name,
                 "rbm_code": rbm_code,
@@ -442,3 +481,46 @@ def get_all_designations() -> dict[str, str]:
             text(f"SELECT employee_code, designation FROM {HIERARCHY_TABLE} WHERE employee_code IS NOT NULL")
         ).all()
     return {code: designation for code, designation in rows}
+
+
+def get_all_doj() -> dict[str, str]:
+    """Return {employee_code: doj} (the ISO 'YYYY-MM-DD' string stored by
+    _doj_cell() above) for every hierarchy row with both an employee_code
+    and a non-blank doj -- bulk, one query, mirroring
+    get_all_designations()'s own "one query instead of one per employee"
+    reasoning. See app.doj_eligibility_service for how this is actually
+    parsed and applied."""
+    if not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+        return {}
+    with get_data_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                f"SELECT employee_code, doj FROM {HIERARCHY_TABLE} "
+                "WHERE employee_code IS NOT NULL AND employee_code != '' "
+                "AND doj IS NOT NULL AND doj != ''"
+            )
+        ).all()
+    return {code: doj for code, doj in rows}
+
+
+def get_doj_by_name() -> dict[str, str]:
+    """Return {TRIM(LOWER(employee_name)): doj} for every hierarchy row
+    with a non-blank doj -- name-keyed, for callers (RGD Coverage) whose
+    own uploaded rows only ever carry an employee's NAME, never a code.
+    First-match-wins per name, same convention as
+    app.hierarchy_service.build_lookup_maps."""
+    if not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+        return {}
+    with get_data_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                f"SELECT employee_name, doj FROM {HIERARCHY_TABLE} "
+                "WHERE employee_name IS NOT NULL AND employee_name != '' "
+                "AND doj IS NOT NULL AND doj != ''"
+            )
+        ).all()
+    result: dict[str, str] = {}
+    for name, doj in rows:
+        key = name.strip().lower()
+        result.setdefault(key, doj)
+    return result

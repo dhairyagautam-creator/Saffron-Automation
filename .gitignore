@@ -37,6 +37,8 @@ Thumbs.db
 reports/*.xlsx
 # Cached cloud / organization data
 cloud_cache/
+# Review System uploaded workbooks (business data, never committed)
+review_uploads/
 # Built Windows installers
 installer_output/
 # Pre-reset database backups

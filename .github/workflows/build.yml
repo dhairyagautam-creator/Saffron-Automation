@@ -92,12 +92,49 @@ jobs:
         id: ver
         run: echo "version=$(python -c 'from app.version import APP_VERSION; print(APP_VERSION)')" >> "$GITHUB_OUTPUT"
 
-      # Reuse the same build definition a developer runs locally so CI and
-      # local builds can never drift.
-      - name: Build .app and .dmg
+      # Import the Developer ID Application certificate into a throwaway
+      # keychain so codesign (invoked by build_app.sh) can find it by
+      # identity. Skipped (build falls back to ad-hoc signing -- see
+      # build_app.sh) if the cert secret isn't configured yet, so this
+      # workflow keeps working before signing is set up. Runner is ephemeral
+      # but the keychain is still deleted in a final cleanup step, matching
+      # standard CI cert-handling practice.
+      - name: Import signing certificate
+        if: ${{ secrets.MACOS_CERTIFICATE != '' }}
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
         run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+      # Reuse the same build definition a developer runs locally so CI and
+      # local builds can never drift. SIGN_IDENTITY/notarization secrets are
+      # empty no-ops until configured (see README section this PR adds) --
+      # the build still succeeds, just ad-hoc signed and unnotarized.
+      - name: Build .app and .dmg
+        env:
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/apple_api_key.p8
+        run: |
+          if [ -n "${{ secrets.APPLE_API_KEY }}" ]; then
+            echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > "$APPLE_API_KEY_PATH"
+          fi
           chmod +x build_app.sh
           ./build_app.sh
+
+      - name: Clean up signing keychain
+        if: ${{ always() && secrets.MACOS_CERTIFICATE != '' }}
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
       - uses: actions/upload-artifact@v4
         with:

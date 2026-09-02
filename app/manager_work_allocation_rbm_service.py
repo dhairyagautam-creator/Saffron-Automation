@@ -48,6 +48,13 @@ from datetime import datetime
 
 from loguru import logger
 
+from app.doj_eligibility_service import (
+    NOT_YET_JOINED_LABEL,
+    is_eligible_for_month,
+    load_doj_by_code,
+    load_doj_by_name,
+    resolve_doj,
+)
 from app.manager_work_allocation_parameters_service import get_rbm_flag_tiers
 from app.manager_work_allocation_shared import (
     first_nonblank,
@@ -69,6 +76,10 @@ STATUS_PASS = "Pass"
 STATUS_FLAGGED = "Flagged"
 STATUS_BM_COVERED = "Yes"
 STATUS_BM_NOT_COVERED = "No"
+# A BM whose DOJ (see app.doj_eligibility_service) leaves NO eligible
+# retained month at all this run -- distinct from STATUS_BM_NOT_COVERED so
+# an entirely-not-yet-joined BM is never scored as "missed".
+STATUS_BM_NOT_YET_JOINED = NOT_YET_JOINED_LABEL
 
 # This engine ONLY analyzes RBM (manager) / BM (subordinate) rows -- every
 # other Emp Designation/Team Emp Designation combination is ignored.
@@ -183,37 +194,57 @@ def _tier_for(total_bms: int, tiers: list):
     return None, None
 
 
-def _evaluate_rbm(name: str, division: str, pair_rows_list: list, tiers: list) -> tuple:
+def _evaluate_rbm(
+    name: str, division: str, pair_rows_list: list, tiers: list, doj_by_code: dict, doj_by_name: dict,
+) -> tuple:
     """Evaluates one RBM's BM pairs against the CURRENT Settings-configured
     `tiers`. `pair_rows_list` is a list of (one list of retained
     ManagerWorkAllocationRecord rows per BM pair) -- each BM's own Total
     Joint Days is the SUM across every month retained in the rolling
-    window for that pair (UNCHANGED rule; only which months get summed
-    into it changed -- see module docstring). Returns (finding dict,
+    window for that pair EXCLUDING any month that BM's own DOJ (see
+    app.doj_eligibility_service) falls after -- never counted as a 0.
+    (UNCHANGED beyond that -- only which months get summed into it
+    changed, first by the 2026-08-05 rolling-history redesign, now by DOJ
+    eligibility too -- see module docstring.) Returns (finding dict,
     evaluated_bms list, tier_label, missed_threshold) -- the last two are
     only needed by the debug summary logger, not persisted."""
     evaluated_bms = []
     for pair_rows in pair_rows_list:
         ordered = sorted(pair_rows, key=lambda r: r.month_sort_key)
         bm_name = first_nonblank(r.team_emp_name for r in ordered)
-        monthly = [(r.month, r.joint_days) for r in ordered]
-        total_joint_days = sum(days for _month, days in monthly)
-        covered = total_joint_days > 0
+        bm_code = first_nonblank(r.team_emp_code for r in ordered)
+        doj = resolve_doj(bm_code, bm_name, doj_by_code, doj_by_name)
+        eligible = [r for r in ordered if is_eligible_for_month(doj, *divmod(r.month_sort_key, 100))]
+        monthly = [(r.month, r.joint_days) for r in eligible]
+        if monthly:
+            total_joint_days = sum(days for _month, days in monthly)
+            covered = total_joint_days > 0
+            status = STATUS_BM_COVERED if covered else STATUS_BM_NOT_COVERED
+            reason = (
+                "Worked with at least once during the rolling window" if covered
+                else "Not worked with during the rolling window"
+            )
+        else:
+            total_joint_days = 0
+            status = STATUS_BM_NOT_YET_JOINED
+            reason = "Not yet joined during the rolling window."
         evaluated_bms.append({
             "bm_name": bm_name,
             "monthly": monthly,
             "joint_days": total_joint_days,
-            "status": STATUS_BM_COVERED if covered else STATUS_BM_NOT_COVERED,
-            "reason": (
-                "Worked with at least once during the rolling window" if covered
-                else "Not worked with during the rolling window"
-            ),
+            "status": status,
+            "reason": reason,
         })
 
     total = len(evaluated_bms)
     covered_count = sum(1 for b in evaluated_bms if b["status"] == STATUS_BM_COVERED)
-    missed_count = total - covered_count
-    coverage_percent = (covered_count / total * 100) if total else 0.0
+    # Excludes STATUS_BM_NOT_YET_JOINED -- a not-yet-joined BM is neither
+    # covered nor missed (see app.doj_eligibility_service), so this RBM is
+    # never flagged on their account alone, and the coverage percentage
+    # below is computed against only the BMs actually eligible to judge.
+    missed_count = sum(1 for b in evaluated_bms if b["status"] == STATUS_BM_NOT_COVERED)
+    eligible_total = covered_count + missed_count
+    coverage_percent = (covered_count / eligible_total * 100) if eligible_total else 0.0
 
     missed_threshold, tier_label = _tier_for(total, tiers)
     plural = "s" if missed_count != 1 else ""
@@ -295,6 +326,8 @@ def process_rbm_report(records: list) -> dict:
     flagged_count, passed_count}.
     """
     tiers = get_rbm_flag_tiers()
+    doj_by_code = load_doj_by_code()
+    doj_by_name = load_doj_by_name()
 
     rbm_bm_rows = [
         r for r in records
@@ -337,7 +370,7 @@ def process_rbm_report(records: list) -> dict:
             division = first_nonblank(r.division for pair_rows in pair_rows_list for r in pair_rows)
 
             finding, evaluated_bms, tier_label, _missed_threshold = _evaluate_rbm(
-                rbm_name, division, pair_rows_list, tiers,
+                rbm_name, division, pair_rows_list, tiers, doj_by_code, doj_by_name,
             )
             findings.append(finding)
             for bm in evaluated_bms:
@@ -471,7 +504,12 @@ def get_employee_bm_monthly_history(manager_name: str) -> dict:
     by this. Changing what this one column SHOWS does not change what
     counts as "covered" or what gets flagged -- see this module's own
     docstring for why RBM's coverage rule is deliberately sum-based, not
-    average-based."""
+    average-based.
+
+    Return shape mirrors the ABM engine's own function exactly, including
+    "not_yet_joined_months" (2026-08 presentation fix) -- see that
+    function's own docstring for why it's a separate key rather than
+    folded into "monthly"."""
     session = get_config_session()
     try:
         records = session.query(ManagerWorkAllocationRecord).filter(
@@ -493,15 +531,39 @@ def get_employee_bm_monthly_history(manager_name: str) -> dict:
         months_seen.setdefault(r.month_sort_key, r.month)
     months = [months_seen[key] for key in sorted(months_seen)]
 
+    doj_by_code = load_doj_by_code()
+    doj_by_name = load_doj_by_name()
+
     by_bm = group_by(records, lambda r: r.team_emp_name)
     bms = []
     for bm_name, bm_records in by_bm.items():
-        monthly = {r.month: r.joint_days for r in bm_records}
+        bm_code = first_nonblank(r.team_emp_code for r in bm_records)
+        doj = resolve_doj(bm_code, bm_name, doj_by_code, doj_by_name)
+        # Same rule as _evaluate_rbm's own sum -- a not-yet-joined month is
+        # a "trend" this employee must not contribute to (see
+        # app.doj_eligibility_service), so it is left out of the monthly
+        # dict and this display-only average entirely (below). `monthly`'s
+        # values stay numeric-only (unchanged contract -- app.
+        # work_distribution_notification_service._average_monthly_trend
+        # sums these for its own email summary and must never see a
+        # non-numeric entry); `not_yet_joined_months` below carries the
+        # DOJ-excluded month labels separately, purely for the Employee
+        # Details UI cell to show NOT_YET_JOINED_LABEL instead of blank
+        # (2026-08 presentation fix) -- reuses this same
+        # is_eligible_for_month() call, not a second DOJ interpretation.
+        eligible_records = [
+            r for r in bm_records if is_eligible_for_month(doj, *divmod(r.month_sort_key, 100))
+        ]
+        monthly = {r.month: r.joint_days for r in eligible_records}
+        not_yet_joined_months = {r.month for r in bm_records if r not in eligible_records}
         detail = details.get(bm_name)
-        true_average = sum(r.joint_days for r in bm_records) / len(bm_records) if bm_records else 0.0
+        true_average = (
+            sum(r.joint_days for r in eligible_records) / len(eligible_records) if eligible_records else 0.0
+        )
         bms.append({
             "subordinate_name": bm_name,
             "monthly": monthly,
+            "not_yet_joined_months": not_yet_joined_months,
             "average": _format_average(true_average),
             "status": detail.status if detail else "",
         })

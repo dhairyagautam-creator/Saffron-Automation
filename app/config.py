@@ -74,12 +74,18 @@ else:
 LOGS_DIR = DATA_DIR / "logs"
 DATABASE_PATH = DATA_DIR / "database" / "saffron_validator.db"
 REPORTS_DIR = DATA_DIR / "reports"
+# Physical copies of Review System uploads (see app/review_upload_service.py)
+# -- one file per slot, named by slot_id so a replace just overwrites it.
+# Never committed (see .gitignore) -- only the file path + validation state
+# are ever recorded in the database.
+REVIEW_UPLOADS_DIR = DATA_DIR / "review_uploads"
 
 if DATA_DIR_ERROR is None:
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        REVIEW_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         DATA_DIR_ERROR = f"Could not create application data folders under {DATA_DIR}: {exc!r}"
 

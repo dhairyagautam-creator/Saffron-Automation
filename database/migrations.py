@@ -248,6 +248,24 @@ def ensure_app_settings_setup_completed_column() -> None:
     logger.info(f"Migration: added setup_completed column to '{APP_SETTINGS_TABLE}' (backfilled for already-configured installs)")
 
 
+def ensure_app_settings_inventory_reset_column() -> None:
+    """Add the inventory_data_reset_completed column to app_settings if it
+    predates the one-time company-wide Inventory factory reset (see
+    app/inventory_factory_reset.py). Always backfilled to 0 (never 1) --
+    unlike setup_completed's own migration, there is no "already
+    effectively done" signal to infer here; every existing installation
+    genuinely still needs the reset to run once."""
+    if not inspect(get_config_engine()).has_table(APP_SETTINGS_TABLE):
+        return
+    if "inventory_data_reset_completed" in _existing_columns(APP_SETTINGS_TABLE):
+        return
+    with get_config_engine().begin() as conn:
+        conn.execute(
+            text(f"ALTER TABLE {APP_SETTINGS_TABLE} ADD COLUMN inventory_data_reset_completed INTEGER NOT NULL DEFAULT 0")
+        )
+    logger.info(f"Migration: added inventory_data_reset_completed column to '{APP_SETTINGS_TABLE}'")
+
+
 def ensure_app_settings_geoapify_key_column() -> None:
     """Add the geoapify_api_key column to app_settings if it predates
     Hospital Suppression's migration off the free OpenStreetMap Overpass
@@ -884,6 +902,48 @@ def ensure_manager_work_allocation_records_month_sort_key_column() -> None:
     )
 
 
+def ensure_work_distribution_doctors_bm_abm_code_columns() -> None:
+    """Add bm_code/abm_code to work_distribution_doctors if they predate
+    the 2026-08 BM/ABM Code fix (see WorkDistributionDoctor's own
+    docstring) -- the old bm/abm (name) columns are left in place,
+    unused, rather than dropped (this project's migrations never drop
+    columns; SQLAlchemy simply ignores a DB column with no matching model
+    attribute). Full-replacement table (see
+    app.work_distribution_service's own module docstring), so no backfill
+    is attempted -- the very next upload rebuilds every row from scratch
+    with real bm_code/abm_code values; existing rows just carry NULL for
+    both until then, which nothing currently queries."""
+    table = "work_distribution_doctors"
+    if not inspect(get_config_engine()).has_table(table):
+        return
+    existing = _existing_columns(table)
+    added = False
+    with get_config_engine().begin() as conn:
+        if "bm_code" not in existing:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN bm_code TEXT"))
+            added = True
+        if "abm_code" not in existing:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN abm_code TEXT"))
+            added = True
+    if added:
+        logger.info(f"Migration: added bm_code/abm_code columns to '{table}'")
+
+
+def ensure_work_distribution_findings_employee_code_column() -> None:
+    """Add employee_code to work_distribution_findings if it predates the
+    2026-08 BM/ABM Code fix (see WorkDistributionFinding's own docstring).
+    Full-replacement table -- same no-backfill reasoning as
+    ensure_work_distribution_doctors_bm_abm_code_columns above."""
+    table = "work_distribution_findings"
+    if not inspect(get_config_engine()).has_table(table):
+        return
+    if "employee_code" in _existing_columns(table):
+        return
+    with get_config_engine().begin() as conn:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN employee_code TEXT"))
+    logger.info(f"Migration: added employee_code column to '{table}'")
+
+
 def run_startup_migrations() -> None:
     """Run all migrations, in order. Call once at application startup."""
     ensure_raw_visits_import_id_column()
@@ -919,3 +979,6 @@ def run_startup_migrations() -> None:
     ensure_manager_work_allocation_findings_rbm_columns()
     ensure_manager_work_allocation_bm_details_reason_column()
     ensure_manager_work_allocation_records_month_sort_key_column()
+    ensure_work_distribution_doctors_bm_abm_code_columns()
+    ensure_work_distribution_findings_employee_code_column()
+    ensure_app_settings_inventory_reset_column()

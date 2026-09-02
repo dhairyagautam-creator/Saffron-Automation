@@ -68,8 +68,22 @@ COLUMN_SYNONYMS = {
     "City": ["city"],
     "HQ": ["hq", "h.q."],
     "Region": ["region"],
-    "BM": ["bm"],
-    "ABM": ["abm"],
+    "BM Code": ["bm code"],
+    "ABM Code": ["abm code"],
+}
+
+# Optional -- unlike COLUMN_SYNONYMS above, a header row missing these
+# still validates fine (see _match_optional_columns). The real production
+# file now also carries "BM Name"/"ABM Name" alongside "BM Code"/"ABM
+# Code" (2026-08 vacancy-detection fix): that's where the file's own
+# vacancy convention lives (Name = "Vacant_<who>", Code just some
+# ordinary-looking value like "V02677") -- see
+# app.work_distribution_service._is_vacant, which reads bm_name/abm_name
+# off each doctor dict below. An older file without these two columns
+# parses exactly as before; bm_name/abm_name simply come back blank.
+OPTIONAL_COLUMN_SYNONYMS = {
+    "BM Name": ["bm name"],
+    "ABM Name": ["abm name"],
 }
 
 _BM_VISIT_PATTERN = re.compile(r"^bm visit\b")
@@ -152,11 +166,13 @@ def _iter_candidate_sheets(file_path: str, extension: str):
             wb.close()
 
 
-def _match_fixed_columns(normalized_row: list) -> dict:
-    """{canonical_name: column_index} for every COLUMN_SYNONYMS entry found
-    anywhere in `normalized_row` -- order-independent, tolerant of any
-    accepted synonym spelling."""
-    synonym_sets = {name: set(_normalize_header(s) for s in syns) for name, syns in COLUMN_SYNONYMS.items()}
+def _match_fixed_columns(normalized_row: list, synonyms: dict = COLUMN_SYNONYMS) -> dict:
+    """{canonical_name: column_index} for every entry in `synonyms` (default
+    COLUMN_SYNONYMS, the required set) found anywhere in `normalized_row`
+    -- order-independent, tolerant of any accepted synonym spelling. Also
+    used with OPTIONAL_COLUMN_SYNONYMS (see _match_optional_columns) --
+    same matching, just a different (non-required) synonym set."""
+    synonym_sets = {name: set(_normalize_header(s) for s in syns) for name, syns in synonyms.items()}
     column_map = {}
     for name, synonym_set in synonym_sets.items():
         for i, norm_v in enumerate(normalized_row):
@@ -166,6 +182,14 @@ def _match_fixed_columns(normalized_row: list) -> dict:
     return column_map
 
 
+def _match_optional_columns(normalized_row: list) -> dict:
+    """{canonical_name: column_index} for every OPTIONAL_COLUMN_SYNONYMS
+    entry found in `normalized_row` -- never affects header validation;
+    a row missing all of these still matches fine (see _find_header_row's
+    own required-column check, which never looks at this)."""
+    return _match_fixed_columns(normalized_row, OPTIONAL_COLUMN_SYNONYMS)
+
+
 def _find_header_row(grid: list, best_partial: dict):
     """Scans `grid` (one sheet) for a row where every COLUMN_SYNONYMS
     column is found AND at least one BM Visit / ABM Visit column is
@@ -173,9 +197,12 @@ def _find_header_row(grid: list, best_partial: dict):
     not matching them (a non-header row matches few or none of the
     required columns, so scanning continues to the next row).
 
-    Returns (row_idx, column_map, bm_visit_idx, abm_visit_idx,
-    bm_visit_header_text, abm_visit_header_text) on a full match, else
-    None. Updates `best_partial` (shared across every sheet scanned) in
+    Returns (row_idx, column_map, optional_column_map, bm_visit_idx,
+    abm_visit_idx, bm_visit_header_text, abm_visit_header_text) on a full
+    match, else None. `optional_column_map` (see _match_optional_columns)
+    is whatever it finds on this same row -- empty if none of
+    OPTIONAL_COLUMN_SYNONYMS are present, never a reason to reject the
+    row. Updates `best_partial` (shared across every sheet scanned) in
     place with whichever row matched the most columns, for a genuinely
     useful error if nothing anywhere fully matches."""
     for row_idx, row in enumerate(grid):
@@ -203,7 +230,8 @@ def _find_header_row(grid: list, best_partial: dict):
         if len(column_map) != len(COLUMN_SYNONYMS) or bm_visit_idx is None or abm_visit_idx is None:
             continue
 
-        return row_idx, column_map, bm_visit_idx, abm_visit_idx, row[bm_visit_idx], row[abm_visit_idx]
+        optional_column_map = _match_optional_columns(normalized_row)
+        return row_idx, column_map, optional_column_map, bm_visit_idx, abm_visit_idx, row[bm_visit_idx], row[abm_visit_idx]
 
     return None
 
@@ -224,8 +252,18 @@ def parse_work_distribution_report(file_path: str, progress_callback=None) -> di
 
     Returns: {success, doctors, period_label, sheet_name, missing_columns,
     error, debug}. `doctors` is a list of dicts: division, doctor_code,
-    doctor_name, speciality, category, abm_rgd, city, hq, region, bm, abm,
-    bm_visit_count, abm_visit_count, period_label.
+    doctor_name, speciality, category, abm_rgd, city, hq, region, bm_code,
+    abm_code, bm_name, abm_name, bm_visit_count, abm_visit_count,
+    period_label. `bm_code`/`abm_code` are the hierarchy's own Employee
+    Codes (the "BM Code"/"ABM Code" columns) -- the primary identity for
+    grouping/aggregation downstream (see app.work_distribution_service);
+    resolving them to a display name is that module's concern, not this
+    parser's. `bm_name`/`abm_name` (2026-08 vacancy-detection fix, from
+    the OPTIONAL "BM Name"/"ABM Name" columns -- see
+    OPTIONAL_COLUMN_SYNONYMS) are blank ("") on a file that doesn't carry
+    those columns; app.work_distribution_service._is_vacant reads these
+    to detect the real file's own vacancy convention ("Vacant_<who>" in
+    the Name, not the Code), never used for identity/grouping.
 
     On failure to find a full header match anywhere, `debug` is populated
     with {sheet_name, header_row_number (1-indexed), matched_columns,
@@ -290,7 +328,7 @@ def parse_work_distribution_report(file_path: str, progress_callback=None) -> di
             "missing_columns": debug["missing_columns"], "error": None, "debug": debug,
         }
 
-    sheet_name, row_idx, column_map, bm_visit_idx, abm_visit_idx, bm_visit_header, abm_visit_header = found
+    sheet_name, row_idx, column_map, optional_column_map, bm_visit_idx, abm_visit_idx, bm_visit_header, abm_visit_header = found
     period_label = _period_label(bm_visit_header, abm_visit_header)
 
     try:
@@ -320,6 +358,8 @@ def parse_work_distribution_report(file_path: str, progress_callback=None) -> di
     rename_map = {df.columns[col_idx]: canonical_name for canonical_name, col_idx in column_map.items()}
     rename_map[df.columns[bm_visit_idx]] = "BM Visit"
     rename_map[df.columns[abm_visit_idx]] = "ABM Visit"
+    for canonical_name, col_idx in optional_column_map.items():
+        rename_map[df.columns[col_idx]] = canonical_name
     df = df.rename(columns=rename_map)
 
     report(75, "Counting visits...")
@@ -339,8 +379,10 @@ def parse_work_distribution_report(file_path: str, progress_callback=None) -> di
             "city": _clean(row.get("City")),
             "hq": _clean(row.get("HQ")),
             "region": _clean(row.get("Region")),
-            "bm": _clean(row.get("BM")),
-            "abm": _clean(row.get("ABM")),
+            "bm_code": _clean(row.get("BM Code")),
+            "abm_code": _clean(row.get("ABM Code")),
+            "bm_name": _clean(row.get("BM Name")),
+            "abm_name": _clean(row.get("ABM Name")),
             "bm_visit_count": _count_visits(row.get("BM Visit")),
             "abm_visit_count": _count_visits(row.get("ABM Visit")),
             "period_label": period_label,

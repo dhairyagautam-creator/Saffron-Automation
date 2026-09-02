@@ -55,6 +55,13 @@ from datetime import datetime
 
 from loguru import logger
 
+from app.doj_eligibility_service import (
+    NOT_YET_JOINED_LABEL,
+    is_eligible_for_month,
+    load_doj_by_code,
+    load_doj_by_name,
+    resolve_doj,
+)
 from app.manager_work_allocation_parameters_service import get_all as get_parameters
 from app.manager_work_allocation_shared import (
     first_nonblank,
@@ -75,6 +82,10 @@ from database.models import (
 STATUS_PASS = "Pass"
 STATUS_FLAGGED = "Flagged"
 STATUS_BM_FAIL = "Fail"
+# A BM whose DOJ (see app.doj_eligibility_service) leaves NO eligible
+# retained month at all this run -- distinct from STATUS_BM_FAIL so an
+# entirely-not-yet-joined BM is never scored as a 0-day failure.
+STATUS_BM_NOT_YET_JOINED = NOT_YET_JOINED_LABEL
 
 # This engine ONLY analyzes ABM (manager) / BM (subordinate) rows -- every
 # other Emp Designation/Team Emp Designation combination is ignored (RBM
@@ -143,6 +154,8 @@ def process_manager_work_allocation_report(records: list) -> dict:
     """
     params = get_parameters()
     min_days = params["minimum_joint_working_days"]
+    doj_by_code = load_doj_by_code()
+    doj_by_name = load_doj_by_name()
 
     abm_bm_rows = [
         r for r in records
@@ -188,9 +201,23 @@ def process_manager_work_allocation_report(records: list) -> dict:
             for pair_rows in bm_pair_rows_list:
                 ordered = sorted(pair_rows, key=lambda r: r.month_sort_key)
                 bm_name = first_nonblank(r.team_emp_name for r in ordered)
-                monthly = [(r.month, r.joint_days) for r in ordered]
-                average = sum(days for _month, days in monthly) / len(monthly) if monthly else 0.0
-                bm_status = STATUS_PASS if average >= min_days else STATUS_BM_FAIL
+                bm_code = first_nonblank(r.team_emp_code for r in ordered)
+                doj = resolve_doj(bm_code, bm_name, doj_by_code, doj_by_name)
+                # A month this BM's own DOJ falls after (see
+                # app.doj_eligibility_service) never contributes to the
+                # average -- excluded here entirely, never counted as a
+                # zero. If DOJ leaves NO eligible month at all in this
+                # retained window, this BM hasn't started yet as of the
+                # newest retained month -- distinct status, not a 0-day
+                # failure.
+                eligible = [r for r in ordered if is_eligible_for_month(doj, *divmod(r.month_sort_key, 100))]
+                monthly = [(r.month, r.joint_days) for r in eligible]
+                if monthly:
+                    average = sum(days for _month, days in monthly) / len(monthly)
+                    bm_status = STATUS_PASS if average >= min_days else STATUS_BM_FAIL
+                else:
+                    average = 0.0
+                    bm_status = STATUS_BM_NOT_YET_JOINED
                 evaluated_bms.append({
                     "bm_name": bm_name,
                     "monthly": monthly,
@@ -201,7 +228,10 @@ def process_manager_work_allocation_report(records: list) -> dict:
 
             total = len(evaluated_bms)
             passed = sum(1 for b in evaluated_bms if b["status"] == STATUS_PASS)
-            failed = total - passed
+            # Excludes STATUS_BM_NOT_YET_JOINED -- a not-yet-joined BM is
+            # neither passed nor failed (see app.doj_eligibility_service),
+            # so this ABM is never flagged on their account alone.
+            failed = sum(1 for b in evaluated_bms if b["status"] == STATUS_BM_FAIL)
 
             if i == 0:
                 _log_abm_debug_summary(abm_name, evaluated_bms, total, failed, min_days)
@@ -336,10 +366,21 @@ def get_employee_bm_monthly_history(manager_name: str) -> dict:
 
     Returns {"months": [<label>, ...] (oldest to newest, whatever is
     currently retained), "bms": [{"subordinate_name", "monthly": {label:
-    days, ...}, "average", "required_days", "status"}, ...]} --
-    `"monthly"` only has an entry for a month this pair actually has a
-    record for (never zero-padded, per the module's own spec); the UI
-    renders a blank cell for a month a BM has no record for."""
+    days, ...}, "not_yet_joined_months": {label, ...}, "average",
+    "required_days", "status"}, ...]} -- `"monthly"` only has an entry for
+    a month this pair actually has a record for AND that record's own DOJ
+    eligibility includes (never zero-padded, per the module's own spec);
+    the UI renders a blank cell for a month a BM has no record for at all.
+    `"not_yet_joined_months"` (2026-08 presentation fix) separately names
+    every month that DOES have a record but whose DOJ eligibility excludes
+    it -- the Employee Details UI shows NOT_YET_JOINED_LABEL for those
+    cells instead of blank, so that case is never indistinguishable from
+    "no record". Kept as its own key rather than folded into `"monthly"`
+    so `"monthly"`'s values stay numeric-only for every existing consumer
+    (e.g. app.work_distribution_notification_service._average_monthly_trend,
+    which sums them for its own email summary). Both sets are built from
+    the same is_eligible_for_month() check -- no second DOJ
+    interpretation."""
     session = get_config_session()
     try:
         records = session.query(ManagerWorkAllocationRecord).filter(
@@ -361,14 +402,37 @@ def get_employee_bm_monthly_history(manager_name: str) -> dict:
         months_seen.setdefault(r.month_sort_key, r.month)
     months = [months_seen[key] for key in sorted(months_seen)]
 
+    doj_by_code = load_doj_by_code()
+    doj_by_name = load_doj_by_name()
+
     by_bm = group_by(records, lambda r: r.team_emp_name)
     bms = []
     for bm_name, bm_records in by_bm.items():
-        monthly = {r.month: r.joint_days for r in bm_records}
+        bm_code = first_nonblank(r.team_emp_code for r in bm_records)
+        doj = resolve_doj(bm_code, bm_name, doj_by_code, doj_by_name)
+        # Same rule as process_manager_work_allocation_report's own
+        # average -- a not-yet-joined month is a "trend" this employee
+        # must not contribute to (see app.doj_eligibility_service), so it
+        # is left out of the monthly dict entirely, same as any other
+        # month this pair has no record for. `monthly`'s values stay
+        # numeric-only (unchanged contract -- app.work_distribution_
+        # notification_service._average_monthly_trend sums these for its
+        # own email summary and must never see a non-numeric entry);
+        # `not_yet_joined_months` below carries the DOJ-excluded month
+        # labels separately, purely for the Employee Details UI cell to
+        # show NOT_YET_JOINED_LABEL instead of blank -- reuses this same
+        # is_eligible_for_month() call, not a second UI-specific
+        # interpretation of DOJ.
+        eligible_records = [
+            r for r in bm_records if is_eligible_for_month(doj, *divmod(r.month_sort_key, 100))
+        ]
+        monthly = {r.month: r.joint_days for r in eligible_records}
+        not_yet_joined_months = {r.month for r in bm_records if r not in eligible_records}
         detail = details.get(bm_name)
         bms.append({
             "subordinate_name": bm_name,
             "monthly": monthly,
+            "not_yet_joined_months": not_yet_joined_months,
             "average": _format_average(detail.joint_days) if detail else "",
             "required_days": _format_average(detail.required_days) if detail else "",
             "status": detail.status if detail else "",

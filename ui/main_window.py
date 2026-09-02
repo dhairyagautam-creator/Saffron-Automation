@@ -27,6 +27,7 @@ from ui.inventory_module import InventoryModule
 from ui.login_page import LoginPage
 from ui.path_validator_module import PathValidatorModule
 from ui.payment_analytics_module import PaymentAnalyticsModule
+from ui.review_system_module import ReviewSystemModule
 from ui.setup_wizard import SetupWizard
 from ui.theme import APP_ICON, Color
 from ui.update_notification_dialog import UpdateNotificationDialog
@@ -162,6 +163,9 @@ class MainWindow(ctk.CTk):
             self, on_home=lambda: self.show_screen("Home")
         )
         self.screens["User Management"] = UserManagementPage(
+            self, on_home=lambda: self.show_screen("Home")
+        )
+        self.screens["Review System"] = ReviewSystemModule(
             self, on_home=lambda: self.show_screen("Home")
         )
 
