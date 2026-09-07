@@ -2,7 +2,15 @@
 (app/inventory_factory_reset.py). Every DB operation runs against a real
 (in-memory) SQLite database, exercising the actual model classes and
 queries, not a second, test-only reimplementation.
+
+The function under test no-ops entirely outside a frozen (installed
+PyInstaller) build -- see its own docstring. pytest runs from source, so
+every test here simulates a frozen build via sys.frozen to exercise the
+real reset logic; a separate test below covers the dev-launch no-op path
+itself.
 """
+
+import sys
 
 import pytest
 from sqlalchemy import create_engine
@@ -30,6 +38,7 @@ def _in_memory_session_factory():
 @pytest.fixture(autouse=True)
 def _isolated_db(monkeypatch):
     monkeypatch.setattr("database.connection._Session", _in_memory_session_factory())
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
 
 
 def _seed_inventory_data():
@@ -172,3 +181,15 @@ def test_fresh_upload_after_completed_reset_is_never_touched():
     assert _counts()["thresholds"] == 1
     assert _counts()["replenishment"] == 1
     assert _counts()["cwh"] == 1
+
+
+# --- 6. A dev/source launch (not frozen) never fires the reset -------------
+
+def test_dev_launch_never_fires_the_reset(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    _seed_inventory_data()
+
+    reset_mod.run_inventory_factory_reset_if_needed()
+
+    assert _counts()["thresholds"] == 1  # untouched -- the guard skipped everything
+    assert _marker() is False            # never even checked, let alone set

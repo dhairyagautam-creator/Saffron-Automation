@@ -14,12 +14,24 @@ own docstring; same "GLOBAL, user row only" convention as
 setup_completed). The marker is set immediately once the local clear
 succeeds.
 
+ONLY RUNS IN A FROZEN (installed PyInstaller) BUILD -- see app/config.py's
+own sys.frozen convention. `python main.py` from a source checkout is a
+dev/verification launch against a real developer's database, not an
+end-user installation; the reset must never fire there. This has real
+teeth: as of this writing the reset has never actually fired on a genuine
+installation (the marker column didn't exist in this repo's own working
+database before this guard was added), so every dev launch would
+otherwise silently consume the one production-only event this function
+exists to guard.
+
 ORDERING (the reason this must be called from main.py, not from anywhere
 inside MainWindow or a background thread): this module is called once,
 synchronously, from main() -- see main.py -- strictly AFTER
 run_startup_migrations() (so the marker column already exists) and
 strictly BEFORE MainWindow()/app.mainloop() ever runs.
 """
+
+import sys
 
 from loguru import logger
 
@@ -50,7 +62,14 @@ def run_inventory_factory_reset_if_needed() -> None:
     the marker check makes every call after the first successful one an
     immediate no-op. Never raises: a startup migration must never be the
     reason the application fails to open (mirrors main.py's own
-    try/except around run_startup_migrations() and friends)."""
+    try/except around run_startup_migrations() and friends).
+
+    No-ops entirely outside a frozen build -- see this module's own
+    docstring for why a dev/source launch must never trigger this."""
+    if not getattr(sys, "frozen", False):
+        logger.info("Inventory factory reset: skipped (not a frozen build -- dev/source launch)")
+        return
+
     session = get_config_session()
     try:
         if _is_reset_already_completed(session):
