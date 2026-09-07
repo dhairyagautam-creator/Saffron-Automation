@@ -42,14 +42,8 @@ def get_connections(names: tuple[str, ...] = WORKBOOK_NAMES) -> dict:
 
 def set_connection(workbook_name: str, file_path: str) -> None:
     """Create or update the stored file path for a workbook. Bumps
-    updated_at -- the genuine local "last modified" timestamp the
-    app-wide Last-Modified-Wins sync rule compares against the cloud
-    (see app/organization_data_sync_service.py) -- every time, whether
-    called from a local Browse click or while applying an inbound sync
-    pull (see app/organization_data_sync_service.sync_workbooks(), which
-    intentionally overwrites this again with the cloud's own timestamp
-    right after, so a pulled connection never looks locally-newer than
-    it actually is)."""
+    updated_at, the genuine local "last modified" timestamp, every time
+    this workbook is (re)connected."""
     session = get_session()
     try:
         row = session.query(WorkbookConnection).filter_by(workbook_name=workbook_name).first()

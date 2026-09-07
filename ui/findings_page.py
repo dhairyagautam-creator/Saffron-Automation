@@ -11,15 +11,12 @@ right (a finding is a finding -- same finding_id, same status workflow), so
 selecting a row in either tab reviews it through the same buttons.
 """
 
-import threading
-
 import customtkinter as ctk
 from loguru import logger
 
 from app.feature_flags_service import is_feature_enabled
 from app.findings_service import get_all_findings, parse_hours_worked_message, set_status
 from app.suppression_service import region_suppressed_finding_ids, suppressed_finding_ids_for_import
-from app.findings_sync_service import push_finding_status
 from app.session_state import get_active_import_id
 from app.table_export_service import RowStyle, default_export_filename, export_rows_with_ui
 from ui.components import Card, EmptyState, PrimaryButton, SecondaryButton, SectionHeader, StatusBadge, TabBar, styled_treeview
@@ -721,7 +718,3 @@ class FindingsPage(ctk.CTkFrame):
         set_status(finding_id, status)
         self._load_findings(force=True)  # the reviewer's own action always refreshes now
         self._render_detail(self._findings_by_id.get(finding_id))
-        # Push to the cloud in the background -- a reviewer's status change
-        # should reach another laptop without this click blocking on the
-        # network (see app/findings_sync_service.py).
-        threading.Thread(target=push_finding_status, args=(finding_id,), daemon=True).start()

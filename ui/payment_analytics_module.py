@@ -6,8 +6,7 @@ content, mirroring ui/inventory_module.py's shell shape. UI scaffold only
 import customtkinter as ctk
 from PIL import Image
 
-from app.payment_refresh import MODULE_KEY as PAYMENTS_MODULE_KEY
-from ui.components import ModuleRefreshControl, SecondaryButton
+from ui.components import SecondaryButton
 from ui.icons import get_icon
 from ui.payment_collections_page import PaymentCollectionsPage
 from ui.payment_customer_analytics_page import PaymentCustomerAnalyticsPage
@@ -80,16 +79,6 @@ class PaymentAnalyticsModule(ctk.CTkFrame):
         ).pack(anchor="w")
 
         ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(0, 8))
-
-        # The single, module-wide "Refresh" action -- manual only, no
-        # automatic background poller for Payments (a deliberate choice,
-        # confirmed with the user; matches Inventory's precedent). Same
-        # shared component Path Validator/Inventory use (see
-        # ui/path_validator_module.py, ui/inventory_module.py) -- no
-        # duplicated button logic between modules.
-        self.refresh_control = ModuleRefreshControl(sidebar, module_shell=self, module_key=PAYMENTS_MODULE_KEY)
-        self.refresh_control.pack(fill="x", padx=12)
-        ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(8, 8))
 
         nav_container = ctk.CTkFrame(sidebar, fg_color="transparent")
         nav_container.pack(fill="x", padx=12)

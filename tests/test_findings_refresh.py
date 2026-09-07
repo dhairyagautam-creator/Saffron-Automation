@@ -1,12 +1,11 @@
-"""Regression: a 15s refresh must not reset the Findings view when nothing
-findings-related changed, and MUST refresh it when a finding's suppression
-status changes.
+"""Regression: reloading the Findings page must not reset the view when
+nothing findings-related changed, and MUST refresh it when a finding's
+suppression status changes.
 
-The bug this guards: the poller re-rendered the Findings page every 15s
-(driven by config/workbook sync churn), rebuilding the tables and clearing the
-user's selection + the open "Suppressed - Region Rule" detail -- even though
-the finding value never changed. findings_signature() is the change-detector
-that lets the page skip a redundant rebuild.
+The bug this guards: a page reload rebuilt the Findings tables and cleared
+the user's selection + the open "Suppressed - Region Rule" detail -- even
+though the finding value never changed. findings_signature() is the
+change-detector that lets the page skip a redundant rebuild.
 """
 
 from datetime import date
@@ -36,7 +35,7 @@ def test_suppression_applied_changes_signature():
 
 
 def test_suppression_reverted_changes_signature():
-    # If sync ever DID revert it, the page would still notice and rebuild.
+    # If a reload ever DID revert it, the page would still notice and rebuild.
     supp = [_f(1, "Suppressed - Region Rule")]
     reverted = [_f(1, None)]
     assert findings_signature(supp) != findings_signature(reverted)

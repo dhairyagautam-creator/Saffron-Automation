@@ -4,7 +4,6 @@ so every page shares the same enterprise look instead of hand-rolling
 widgets from scratch.
 """
 
-from datetime import datetime
 from tkinter import ttk
 
 import customtkinter as ctk
@@ -377,92 +376,3 @@ class TabBar(ctk.CTkFrame):
                     fg_color="transparent", hover_color=Color.SURFACE,
                     text_color=Color.TEXT_SECONDARY, border_width=1, border_color=Color.BORDER,
                 )
-
-
-class ModuleRefreshControl(ctk.CTkFrame):
-    """A single, reusable "Refresh" button + status label wired to
-    app/module_refresh_service.py's generic refresh mechanism -- Version
-    2.0, Milestone 22. Used identically by every cloud-synced module's
-    shell (Path Validator, Inventory, ...) so there is exactly one
-    implementation of "click Refresh, disable while running, re-render
-    the active page if anything changed, show sync status" across the
-    whole app, not one copy per module.
-
-    `module_shell` is the owning module's shell widget (e.g.
-    PathValidatorModule/InventoryModule) -- needs `.active_page` (str |
-    None) and `.pages` (dict of name -> page widget) so a successful,
-    changed refresh can re-render whichever page is currently visible via
-    that page's own on_show(), the same "reload on navigate" convention
-    every page already implements. Duck-typed, no shared base class
-    required."""
-
-    def __init__(self, master, module_shell, module_key: str, **kwargs):
-        kwargs.setdefault("fg_color", "transparent")
-        super().__init__(master, **kwargs)
-        self._module_shell = module_shell
-        self._module_key = module_key
-
-        self.button = ctk.CTkButton(
-            self,
-            text="Refresh",
-            image=get_icon("refresh", size=16, color=Color.TEXT_ON_PRIMARY),
-            compound="left",
-            font=Font.BODY,
-            fg_color=Color.PRIMARY,
-            hover_color=Color.PRIMARY_HOVER,
-            text_color=Color.TEXT_ON_PRIMARY,
-            corner_radius=Radius.SM,
-            height=36,
-            command=self._on_clicked,
-        )
-        self.button.pack(fill="x")
-
-        self.status_label = ctk.CTkLabel(
-            self, text="Not yet synced this session", font=Font.SMALL, text_color=Color.TEXT_MUTED, anchor="w"
-        )
-        self.status_label.pack(fill="x", pady=(4, 0))
-
-        # A shell rebuild (e.g. Path Validator's mode toggle) can happen
-        # while a refresh started before it is still running -- reflect
-        # that immediately instead of showing a stale, clickable "Refresh"
-        # while one is in flight.
-        from app.module_refresh_service import is_module_refreshing
-
-        if is_module_refreshing(module_key):
-            self.button.configure(state="disabled", text="Syncing…")
-            self.status_label.configure(text="Syncing…")
-
-    def _on_clicked(self) -> None:
-        from app.module_refresh_service import refresh_module_async
-
-        self.button.configure(state="disabled", text="Syncing…")
-        self.status_label.configure(text="Syncing…")
-
-        started = refresh_module_async(self._module_key, self._on_complete)
-        if not started:
-            # Something else (the background poller, if this module has
-            # one) is already mid-sync -- there's no handle on that run's
-            # completion, so just say so; the button naturally re-enables
-            # next time either one finishes.
-            self.status_label.configure(text="Already syncing…")
-
-    def _on_complete(self, result) -> None:
-        """Runs on the background thread refresh_module_async() spawned --
-        marshal every widget touch back to the main thread via
-        self.after(0, ...)."""
-
-        def apply() -> None:
-            if not self.winfo_exists():
-                return
-            self.button.configure(state="normal", text="Refresh")
-            if result.success:
-                stamp = (result.finished_at or datetime.now()).strftime("%I:%M %p")
-                self.status_label.configure(text=f"Synced {stamp}")
-                if result.changed and self._module_shell.active_page:
-                    page = self._module_shell.pages.get(self._module_shell.active_page)
-                    if page is not None and hasattr(page, "on_show"):
-                        page.on_show()
-            else:
-                self.status_label.configure(text=f"Sync failed: {result.error_message}")
-
-        self.after(0, apply)

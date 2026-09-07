@@ -38,21 +38,16 @@ any exact positive decimal, same as CWH's always could. The CWH field
 itself is completely unmodified.
 """
 
-import threading
-
 import customtkinter as ctk
 from loguru import logger
 
-from app import sync_service
 from app.inventory_email_settings_service import get_settings as get_email_settings
 from app.inventory_email_settings_service import save_settings as save_email_settings
 from app.inventory_parameters_service import (
     DISPLAY_MODE_PACKS,
     DISPLAY_MODE_RAW,
-    MODULE_KEY,
     get_cwh_threshold_multiplier,
     get_excess_transfer_candidate_multiplier,
-    get_full_configuration,
     get_threshold_display_mode,
     get_threshold_multiplier,
     set_cwh_threshold_multiplier,
@@ -207,7 +202,6 @@ class InventorySettingsPage(ctk.CTkFrame):
         self.multiplier_entry.delete(0, "end")
         self.multiplier_entry.insert(0, _format_multiplier(value))
         self.multiplier_status_label.configure(text=MULTIPLIER_SAVE_CONFIRMATION, text_color=Color.WARNING)
-        self._push_config_in_background()
 
     # --- CWH Threshold Multiplier ------------------------------------------
     # A plain numeric entry, not a slider like the CFA multiplier above --
@@ -293,7 +287,6 @@ class InventorySettingsPage(ctk.CTkFrame):
         self.cwh_multiplier_entry.delete(0, "end")
         self.cwh_multiplier_entry.insert(0, _format_multiplier(value))
         self.cwh_multiplier_status_label.configure(text=CWH_MULTIPLIER_SAVE_CONFIRMATION, text_color=Color.WARNING)
-        self._push_config_in_background()
 
     # --- Excess Inventory Settings ------------------------------------------
     # Same free-form-entry pattern as the CWH multiplier above (not a
@@ -379,7 +372,6 @@ class InventorySettingsPage(ctk.CTkFrame):
         self.excess_multiplier_entry.delete(0, "end")
         self.excess_multiplier_entry.insert(0, _format_multiplier(value))
         self.excess_multiplier_status_label.configure(text=EXCESS_MULTIPLIER_SAVE_CONFIRMATION, text_color=Color.SUCCESS)
-        self._push_config_in_background()
 
     # --- Threshold Display Mode --------------------------------------------
 
@@ -444,7 +436,6 @@ class InventorySettingsPage(ctk.CTkFrame):
         mode = DISPLAY_MODE_VALUES[self.display_mode_menu.get()]
         set_threshold_display_mode(mode)
         self.display_mode_status_label.configure(text="Saved")
-        self._push_config_in_background()
 
     # --- Email Configuration ------------------------------------------------
     # Mirrors ui/settings_page.py's own "Email Settings" card as closely as
@@ -588,25 +579,6 @@ class InventorySettingsPage(ctk.CTkFrame):
         self.email_settings_result_label.configure(text=message, text_color=Color.SUCCESS if success else Color.ERROR)
         self.email_test_button.configure(state="normal")
         self.email_save_button.configure(state="normal")
-
-    # --- Cloud sync ------------------------------------------------------
-
-    def _push_config_in_background(self) -> None:
-        """Pushes Inventory's entire cloud-synced configuration (both
-        parameters together, since they share one cloud row -- see
-        app/inventory_parameters_service.py) after either Save button is
-        clicked. Runs in the background so neither save handler blocks
-        the UI on network I/O."""
-
-        def worker() -> None:
-            try:
-                result = sync_service.push_config(MODULE_KEY, get_full_configuration())
-                if not result.success:
-                    logger.warning(f"Failed to sync Inventory parameters to the cloud: {result.error_message}")
-            except Exception as exc:
-                logger.error(f"Failed to sync Inventory parameters to the cloud: {exc}")
-
-        threading.Thread(target=worker, daemon=True).start()
 
     # --- Page lifecycle ------------------------------------------------------
 

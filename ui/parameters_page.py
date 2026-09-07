@@ -7,27 +7,16 @@ immediately. Each top-level entry in RULE_SECTIONS renders as one
 collapsible Card — adding a future section (e.g. "Monthly Review
 Parameters") is just one more entry here; no other code needs to change.
 
-Version 2.0, Milestone 9: Save pushes CLOUD_SYNCED_RULE_NAMES (see
-app/rule_parameters.py) to Supabase before writing the local cache --
-cloud-first, matching "Supabase is the source of truth". All Supabase
-calls go through the generic app/sync_service.py; this file only knows
-"push a dict," never anything about how that dict reaches Supabase.
-
-Version 2.0, Milestone 20: this page no longer has its own "Refresh"
-button -- pulling the latest cloud config down is now the module-wide
-Refresh action's job (see app/path_validator_refresh.py,
-ui/path_validator_module.py), which re-renders this page via on_show()
-exactly like every other Path Validator page, with no per-page pull logic
-duplicated here.
+Save writes straight to the local `rule_parameters` cache -- every place
+that reads a threshold fetches fresh on its own next call, so a saved
+change takes effect immediately, no restart required.
 """
 
 import re
-import threading
 from tkinter import colorchooser
 
 import customtkinter as ctk
 
-from app import rule_parameters, sync_service
 from app.mode_state import is_developer_mode
 from app.rule_parameters import DEFAULT_PARAMETERS, get_parameters, set_parameter
 from ui.components import Card, PrimaryButton, SecondaryButton, SectionHeader
@@ -557,45 +546,16 @@ class ParametersPage(ctk.CTkFrame):
             self._set_confirmation(errors[0], Color.ERROR)
             return
 
-        # Sections outside the cloud-synced set (Hospital Suppression,
-        # Developer Mode only) save straight to the local cache exactly as
-        # before -- Developer Mode data is deliberately never shared
-        # across machines (see app/rule_parameters.py's module docstring),
-        # so it never goes through the cloud-first save path below.
         for section in self._active_sections:
             rule_name = section["rule_name"]
-            if rule_name in rule_parameters.CLOUD_SYNCED_RULE_NAMES:
-                continue
             for spec in self._all_fields(section):
                 name = spec["name"]
                 value_str = self._serialize_field_value(self._controls[(rule_name, name)], spec)
                 set_parameter(rule_name, name, value_str)
 
-        cloud_config = self._collect_cloud_config()
-        if not cloud_config:
-            self._set_confirmation("Saved.", Color.SUCCESS)
-            return
+        self._set_confirmation("Saved.", Color.SUCCESS)
 
-        self._set_busy(True, saving=True)
-
-        def worker() -> None:
-            result = sync_service.push_config(rule_parameters.MODULE_KEY, cloud_config)
-            self.after(0, self._on_save_sync_complete, cloud_config, result)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_save_sync_complete(self, cloud_config: dict, result) -> None:
-        self._set_busy(False)
-        if not result.success:
-            self._set_confirmation(f"Could not save to the cloud: {result.error_message}", Color.ERROR)
-            return
-        # Step 3 (per the spec: validate -> save to Supabase -> update the
-        # local cache): only write the cache once Supabase has confirmed
-        # the save, so the cache never reflects an edit the cloud rejected.
-        rule_parameters.apply_full_configuration(cloud_config)
-        self._set_confirmation("Saved and synced to the cloud.", Color.SUCCESS)
-
-    # --- Helpers: validation, cloud config collection, busy/status state --
+    # --- Helpers: validation, busy/status state --
 
     def _validate_all_fields(self) -> list[str]:
         """Checked before anything is saved anywhere (local or cloud).
@@ -632,27 +592,6 @@ class ParametersPage(ctk.CTkFrame):
                             if numbers != sorted(numbers):
                                 errors.append(f"{spec['label']} values must be in ascending order.")
         return errors
-
-    def _collect_cloud_config(self) -> dict:
-        """Assembles the current widget values for every cloud-synced
-        section into {rule_name: {parameter_name: value_str}} -- exactly
-        the shape app.rule_parameters.apply_full_configuration() expects
-        back, and what app.sync_service.push_config() uploads as-is."""
-        config = {}
-        for section in self._active_sections:
-            rule_name = section["rule_name"]
-            if rule_name not in rule_parameters.CLOUD_SYNCED_RULE_NAMES:
-                continue
-            config[rule_name] = {
-                spec["name"]: self._serialize_field_value(self._controls[(rule_name, spec["name"])], spec)
-                for spec in self._all_fields(section)
-            }
-        return config
-
-    def _set_busy(self, busy: bool, saving: bool = True) -> None:
-        self.save_button.configure(
-            state="disabled" if busy else "normal", text="Saving..." if busy and saving else "Save Parameters"
-        )
 
     def _set_confirmation(self, text: str, color: str) -> None:
         self.confirmation_label.configure(text=text, text_color=color)

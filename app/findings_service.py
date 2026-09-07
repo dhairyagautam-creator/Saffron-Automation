@@ -112,7 +112,6 @@ def set_status(finding_id: int, status: str) -> None:
             raise ValueError(f"No finding with id {finding_id}")
         finding.status = status
         finding.updated_at = datetime.now()
-        finding.dirty = 1  # local change -- protect from a stale cloud pull, push with CAS
         session.commit()
     finally:
         session.close()
@@ -140,7 +139,6 @@ def set_notification_status(finding_id: int, notification_status: str, suppressi
         if suppression_reason is not None:
             finding.suppression_reason = suppression_reason
         finding.updated_at = datetime.now()
-        finding.dirty = 1  # local change -- protect from a stale cloud pull, push with CAS
         session.commit()
     finally:
         session.close()
@@ -163,7 +161,6 @@ def note_suppression_check_issue(finding_id: int, note: str) -> None:
             raise ValueError(f"No finding with id {finding_id}")
         finding.suppression_reason = note
         finding.updated_at = datetime.now()
-        finding.dirty = 1  # local change -- protect from a stale cloud pull, push with CAS
         session.commit()
     finally:
         session.close()
@@ -195,7 +192,6 @@ def set_hospital_suppression(
         finding.hospital_lon = hospital_lon
         finding.hospital_distance_meters = distance_meters
         finding.updated_at = datetime.now()
-        finding.dirty = 1  # local change -- protect from a stale cloud pull, push with CAS
         session.commit()
     finally:
         session.close()

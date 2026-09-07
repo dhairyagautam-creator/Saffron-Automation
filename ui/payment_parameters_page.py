@@ -25,18 +25,12 @@ implying settings that don't do anything. Both can come back in a future
 release.
 """
 
-import threading
-
 import customtkinter as ctk
-from loguru import logger
 
-from app import sync_service
 from app.payment_analytics_service import RISK_GREEN, RISK_ORANGE, RISK_RED, RISK_YELLOW
 from app.payment_parameters_service import (
     COLLECTIONS_AGEING,
     HISTORICAL_RISK_SCORING,
-    MODULE_KEY,
-    get_full_configuration,
     get_parameters,
     set_parameter,
 )
@@ -160,27 +154,8 @@ class _ThresholdSection(Card):
         for key, value in values.items():
             set_parameter(self._rule_name, key, str(value))
         self.status_label.configure(text="Saved", text_color=Color.SUCCESS)
-        self._push_config_in_background()
         if self._on_saved is not None:
             self._on_saved()
-
-    def _push_config_in_background(self) -> None:
-        """Pushes Payment Analytics' entire cloud-synced configuration
-        (both Risk Scoring and Collections Ageing sections together,
-        since they share one cloud row -- see
-        app/payment_parameters_service.py) after either section's Save
-        button is clicked. Runs in the background so the save handler
-        never blocks on network I/O."""
-
-        def worker() -> None:
-            try:
-                result = sync_service.push_config(MODULE_KEY, get_full_configuration())
-                if not result.success:
-                    logger.warning(f"Failed to sync Payment Analytics parameters to the cloud: {result.error_message}")
-            except Exception as exc:
-                logger.error(f"Failed to sync Payment Analytics parameters to the cloud: {exc}")
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def _on_reset_clicked(self) -> None:
         self._load_values()

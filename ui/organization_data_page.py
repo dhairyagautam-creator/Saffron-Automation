@@ -13,14 +13,12 @@ Browse/Connected-Workbooks UI, which differs per page) and simply hands
 the resulting stats + a reload request to that shared component.
 """
 
-import threading
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from loguru import logger
 
 from app.hierarchy_parser import refresh_hierarchy
-from app.organization_data_sync_service import push_workbook
 from app.workbook_connections import WORKBOOK_NAMES, get_connections, get_status, set_connection
 from ui.components import Card, PrimaryButton, SectionHeader, StatusBadge
 from ui.hierarchy_table_section import HierarchyTableSection
@@ -134,11 +132,8 @@ class OrganizationDataPage(ctk.CTkFrame):
         self.hierarchy_section.pack(fill="both", expand=True)
 
     def on_show(self) -> None:
-        """Called by MainWindow every time this page becomes visible.
-        Pulling from the cloud is no longer this page's own job -- see the
-        module-wide Refresh button/background poller in
-        ui/path_validator_module.py, which call this page's on_show()
-        again after a successful sync (see app/path_validator_refresh.py)."""
+        """Called by MainWindow every time this page becomes visible --
+        reloads connection labels and the hierarchy table from local data."""
         self._refresh_connection_labels()
         self.hierarchy_section.load_from_db()
 
@@ -161,16 +156,6 @@ class OrganizationDataPage(ctk.CTkFrame):
         set_connection(workbook_name, file_path)
         logger.info(f"Organization Data workbook connected: '{workbook_name}' -> {file_path}")
         self._refresh_connection_labels()
-        self._push_workbook_in_background(workbook_name, file_path)
-
-    def _push_workbook_in_background(self, workbook_name: str, file_path: str) -> None:
-        def worker() -> None:
-            try:
-                push_workbook(workbook_name, file_path)
-            except Exception as exc:
-                logger.error(f"Failed to sync workbook '{workbook_name}' to the cloud: {exc}")
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def _on_refresh_clicked(self) -> None:
         self.refresh_button.configure(state="disabled")

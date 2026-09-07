@@ -24,16 +24,6 @@ class ImportHistory(Base):
     imported_at = Column(DateTime, nullable=False, default=datetime.now)
     rows_imported = Column(Integer, nullable=False)
     duplicates_removed = Column(Integer, nullable=False)
-    # Cloud sync bookkeeping (see app/import_sync_service.py). cloud_id is
-    # the client-generated UUID tying this import together across laptops --
-    # local autoincrement `id` collides across machines. sync_origin is
-    # 'local' (this machine ran the import itself) or 'remote' (reconstructed
-    # from another machine's push, via app/import_sync_service.py) --
-    # 'remote' imports skip local rule evaluation and rely on synced
-    # findings instead.
-    cloud_id = Column(String, nullable=True, unique=True)
-    synced_at = Column(DateTime, nullable=True)
-    sync_origin = Column(String, nullable=False, default="local")
 
 
 class ActiveSession(Base):
@@ -48,11 +38,6 @@ class ActiveSession(Base):
     id = Column(Integer, primary_key=True)
     import_id = Column(Integer, nullable=True)
     activated_at = Column(DateTime, nullable=True)
-    # Cloud sync bookkeeping (see app/import_sync_service.py) -- the shared
-    # "which import is the team's current working session" pointer, synced
-    # via the path_validator_active_session cloud table.
-    import_cloud_id = Column(String, nullable=True)
-    synced_at = Column(DateTime, nullable=True)
 
 
 class RuleParameter(Base):
@@ -161,29 +146,9 @@ class InvestigationFinding(Base):
     hospital_distance_meters = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="Open")
     created_at = Column(DateTime, nullable=False, default=datetime.now)
-    # Cloud sync bookkeeping (see app/findings_sync_service.py). updated_at
-    # is bumped on every reviewer status change (set_status()/
-    # set_notification_status() in app/findings_service.py) -- the field the
-    # sync poller's delta-pull relies on to fetch only what changed since a
-    # laptop's own high-water mark, so a status click on one laptop reaches
-    # another without re-pulling every finding every tick.
-    cloud_id = Column(String, nullable=True, unique=True)
+    # Bumped on every reviewer status change (set_status()/
+    # set_notification_status() in app/findings_service.py).
     updated_at = Column(DateTime, nullable=True)
-    synced_at = Column(DateTime, nullable=True)
-    # --- Sync reliability (Phase 1 -- Path Validator findings only) --------
-    # cloud_version is the cloud row's own `updated_at` token this local row
-    # has last ACKNOWLEDGED (stored verbatim from a push ack or a pull). It is
-    # a server-origin value compared ONLY against the cloud's current
-    # `updated_at`, never against a local wall clock / datetime.now(), so
-    # timezone or clock skew can't reverse a sync decision. `dirty` = 1 marks
-    # a local business mutation (suppression, reviewer status) not yet
-    # acknowledged by the cloud: reconcile_rows never pulls a cloud snapshot
-    # over a dirty row, and the push uses an optimistic version check (CAS)
-    # against cloud_version. See app/findings_sync_service.py and
-    # app/sync_service.reconcile_rows(). Persisted columns, so an
-    # unsynchronized change survives a restart/crash and is retried.
-    cloud_version = Column(String, nullable=True)
-    dirty = Column(Integer, nullable=False, default=0)
 
 
 class WorkbookConnection(Base):
@@ -196,23 +161,9 @@ class WorkbookConnection(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     workbook_name = Column(String, nullable=False, unique=True)
     file_path = Column(String, nullable=True)
-    # Cloud sync bookkeeping (see app/organization_data_sync_service.py).
-    # storage_path is this workbook's object path in the
-    # 'path-validator-organization-data' Storage bucket once pushed;
-    # cloud_updated_at mirrors the cloud row's own updated_at so the sync
-    # poller can tell whether another laptop has connected a newer version.
-    # file_path itself is untouched -- still just "what was last manually
-    # browsed on this machine."
-    storage_path = Column(String, nullable=True)
-    cloud_updated_at = Column(DateTime, nullable=True)
-    synced_at = Column(DateTime, nullable=True)
-    # The genuine local "last modified" timestamp the app-wide
-    # Last-Modified-Wins rule (see app/sync_service.reconcile_rows(),
-    # Milestone 35) compares against the cloud's own updated_at -- bumped
-    # in app/workbook_connections.set_connection() every time this
-    # workbook is (re)connected, whether by a local Browse click or by
-    # applying an inbound sync pull. Distinct from cloud_updated_at, which
-    # only ever records the cloud's own timestamp as of the last sync.
+    # The genuine local "last modified" timestamp -- bumped in
+    # app/workbook_connections.set_connection() every time this workbook
+    # is (re)connected.
     updated_at = Column(DateTime, nullable=True)
 
 
@@ -352,11 +303,7 @@ class EmailNotification(Base):
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     sent_at = Column(DateTime, nullable=True)
-    # Cloud sync bookkeeping (see app/email_sync_service.py) -- same
-    # updated_at-driven delta-pull treatment as InvestigationFinding.
-    cloud_id = Column(String, nullable=True, unique=True)
     updated_at = Column(DateTime, nullable=True)
-    synced_at = Column(DateTime, nullable=True)
 
 
 class MasterEmailRecipient(Base):
@@ -583,15 +530,10 @@ class PaymentInvoice(Base):
     clear_date = Column(Date, nullable=False)
     payment_days = Column(Integer, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
-    # Cloud sync bookkeeping (see app/payment_sync_service.py). updated_at
-    # is set once at insert time and never bumped again -- these rows are
-    # immutable once stored (only created via a monthly append, or wiped
-    # wholesale by a Historical Report re-run), so it doubles as the
-    # delta-pull watermark with no separate "was this edited" tracking
-    # needed.
-    cloud_id = Column(String, nullable=True, unique=True)
+    # updated_at is set once at insert time and never bumped again --
+    # these rows are immutable once stored (only created via a monthly
+    # append, or wiped wholesale by a Historical Report re-run).
     updated_at = Column(DateTime, nullable=True)
-    synced_at = Column(DateTime, nullable=True)
 
 
 class PaymentAnalyticsParameter(Base):
@@ -711,14 +653,6 @@ class OutstandingInvoice(Base):
     month = Column(String, nullable=True)  # from the report's "Month" column -- stored for future use, not surfaced yet
     followed_up = Column(Integer, nullable=False, default=0)  # 0/1
     uploaded_at = Column(DateTime, nullable=False, default=datetime.now)
-    # Cloud sync bookkeeping (see app/payment_sync_service.py). cloud_id
-    # exists solely so the followed_up checkbox toggle can address one
-    # specific row across machines between uploads -- every full upload
-    # is synced as a full replace (delete-all-cloud + push-current) in
-    # both directions, never a delta, matching this table's own
-    # local "Daily Refresh" behavior.
-    cloud_id = Column(String, nullable=True, unique=True)
-    synced_at = Column(DateTime, nullable=True)
 
 
 class InventoryReplenishment(Base):
@@ -856,10 +790,7 @@ class CwhStock(Base):
 
     last_updated is bumped on every upsert, following the exact same
     convention as InventoryThreshold/InventoryReplenishment's own
-    last_updated columns -- kept deliberately even though no cloud sync
-    exists for this table yet, so a future sync_cwh_stock() can reuse the
-    same Last-Modified-Wins reconciliation (app/sync_service.reconcile_rows)
-    those two tables already use, without a schema change.
+    last_updated columns.
 
     Always stored on the config/main database (get_config_session()),
     same reasoning as InventoryThreshold/InventoryReplenishment."""

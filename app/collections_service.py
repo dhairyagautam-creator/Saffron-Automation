@@ -304,10 +304,7 @@ def set_follow_up(invoice_id: int, followed_up: bool) -> None:
     """Step 6: persist the Follow-up checkbox so it survives a page
     revisit or an app restart -- cleared only by the next Outstanding
     Report upload (process_outstanding_report() replaces every row).
-    Bumps updated_at -- the reliable local "last modified" timestamp the
-    app-wide Last-Modified-Wins sync rule compares against the cloud (see
-    app/payment_sync_service.py) -- so this toggle is recognized as the
-    newer copy on the next reconcile."""
+    Bumps updated_at, the local "last modified" timestamp."""
     session = get_config_session()
     try:
         invoice = session.get(OutstandingInvoice, invoice_id)

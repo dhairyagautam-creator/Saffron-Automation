@@ -31,8 +31,6 @@ from app.coordinates import parse_coordinates
 from app.email_settings_service import is_automatic_sending_enabled
 from app.feature_flags_service import is_feature_enabled
 from app.findings_service import get_summary_counts
-from app.findings_sync_service import sync_findings_for_import
-from app.import_sync_service import push_active_session, push_import
 from app.metrics import calculate_metrics
 from app.notification_service import preview_email_batch, send_all_emails
 from app.send_state import finish_sending, start_sending
@@ -342,10 +340,7 @@ class OperationsPage(ctk.CTkFrame):
 
     def on_show(self) -> None:
         """Called every time this page becomes visible — refresh live data
-        from local SQLite. Pulling from the cloud is no longer this page's
-        own job -- see the module-wide Refresh button/background poller in
-        ui/path_validator_module.py, which call this page's on_show() again
-        after a successful sync (see app/path_validator_refresh.py)."""
+        from local SQLite."""
         self._render_history()
         self._refresh_session_summary()
 
@@ -680,8 +675,6 @@ class OperationsPage(ctk.CTkFrame):
             )
             self.status_label.configure(text=summary_text)
 
-            self._start_cloud_push(import_id, dict(self._loaded_file_paths))
-
             self._loaded_dfs = {}
             self._loaded_file_names = {}
             self._loaded_file_paths = {}
@@ -704,23 +697,6 @@ class OperationsPage(ctk.CTkFrame):
         finally:
             for button in self.browse_buttons.values():
                 button.configure(state="normal")
-
-    def _start_cloud_push(self, import_id: int, division_file_paths: dict) -> None:
-        """Uploads this import's original division files + metadata, its
-        findings, and the new active session pointer to the cloud, in the
-        background -- never blocks the pipeline on network I/O. No-op in
-        Developer Mode (see app/import_sync_service.py)."""
-
-        def worker() -> None:
-            try:
-                pushed = push_import(import_id, division_file_paths)
-                if pushed:
-                    sync_findings_for_import(import_id)
-                    push_active_session(import_id)
-            except Exception as exc:
-                logger.error(f"Cloud sync failed for import_id={import_id}: {exc}")
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def _start_automatic_send(self, import_id: int, base_summary_text: str) -> None:
         self.status_label.configure(text=base_summary_text + " Sending manager emails in the background…")

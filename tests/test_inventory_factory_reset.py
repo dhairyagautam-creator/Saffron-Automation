@@ -1,8 +1,6 @@
 """Tests for the one-time company-wide Inventory data factory reset
-(app/inventory_factory_reset.py). The cloud clear (push_thresholds_full_
-replace/push_replenishment_full_replace) is mocked -- these tests never
-touch a real Supabase connection -- but every DB operation runs against a
-real (in-memory) SQLite database, exercising the actual model classes and
+(app/inventory_factory_reset.py). Every DB operation runs against a real
+(in-memory) SQLite database, exercising the actual model classes and
 queries, not a second, test-only reimplementation.
 """
 
@@ -104,9 +102,7 @@ def _marker() -> bool:
 
 # --- 1. Existing Inventory data is removed ---------------------------------
 
-def test_reset_clears_all_three_inventory_tables(monkeypatch):
-    monkeypatch.setattr(reset_mod, "push_thresholds_full_replace", lambda: True)
-    monkeypatch.setattr(reset_mod, "push_replenishment_full_replace", lambda: True)
+def test_reset_clears_all_three_inventory_tables():
     _seed_inventory_data()
 
     reset_mod.run_inventory_factory_reset_if_needed()
@@ -119,9 +115,7 @@ def test_reset_clears_all_three_inventory_tables(monkeypatch):
 
 # --- 2. Other module data is untouched --------------------------------------
 
-def test_reset_preserves_other_module_data(monkeypatch):
-    monkeypatch.setattr(reset_mod, "push_thresholds_full_replace", lambda: True)
-    monkeypatch.setattr(reset_mod, "push_replenishment_full_replace", lambda: True)
+def test_reset_preserves_other_module_data():
     _seed_inventory_data()
     _seed_other_module_data()
 
@@ -132,9 +126,7 @@ def test_reset_preserves_other_module_data(monkeypatch):
 
 # --- 3. Application settings (Inventory's own config) are untouched --------
 
-def test_reset_preserves_inventory_parameters_and_recipients(monkeypatch):
-    monkeypatch.setattr(reset_mod, "push_thresholds_full_replace", lambda: True)
-    monkeypatch.setattr(reset_mod, "push_replenishment_full_replace", lambda: True)
+def test_reset_preserves_inventory_parameters_and_recipients():
     _seed_inventory_data()
     _seed_inventory_settings()
 
@@ -147,79 +139,23 @@ def test_reset_preserves_inventory_parameters_and_recipients(monkeypatch):
 
 # --- 4. The reset marker prevents the reset from running again -------------
 
-def test_reset_runs_once_and_marker_prevents_a_second_run(monkeypatch):
-    calls = {"thresholds": 0, "replenishment": 0}
-
-    def _fake_thresholds():
-        calls["thresholds"] += 1
-        return True
-
-    def _fake_replenishment():
-        calls["replenishment"] += 1
-        return True
-
-    monkeypatch.setattr(reset_mod, "push_thresholds_full_replace", _fake_thresholds)
-    monkeypatch.setattr(reset_mod, "push_replenishment_full_replace", _fake_replenishment)
+def test_reset_runs_once_and_marker_prevents_a_second_run():
     _seed_inventory_data()
 
     reset_mod.run_inventory_factory_reset_if_needed()
     assert _marker() is True
-    assert calls == {"thresholds": 1, "replenishment": 1}
 
     # Re-seed as if new data had somehow appeared, then run again -- a
     # completed reset must be a permanent no-op, never touching data again.
     _seed_inventory_data()
     reset_mod.run_inventory_factory_reset_if_needed()
 
-    assert calls == {"thresholds": 1, "replenishment": 1}  # not called again
     assert _counts()["thresholds"] == 1  # the re-seeded row survives untouched
-
-
-def test_marker_not_set_when_cloud_clear_fails(monkeypatch):
-    """Must never lie about completion -- a failed cloud clear leaves the
-    marker unset so the next launch retries."""
-    monkeypatch.setattr(reset_mod, "push_thresholds_full_replace", lambda: False)
-    monkeypatch.setattr(reset_mod, "push_replenishment_full_replace", lambda: True)
-    _seed_inventory_data()
-
-    reset_mod.run_inventory_factory_reset_if_needed()
-
-    assert _marker() is False
-    # local data is still cleared even though the cloud clear failed --
-    # see the module's own documented behavior.
-    assert _counts()["thresholds"] == 0
-
-
-def test_retries_local_clear_on_next_launch_after_a_failed_cloud_clear(monkeypatch):
-    attempts = {"n": 0}
-
-    def _flaky_thresholds():
-        attempts["n"] += 1
-        return attempts["n"] > 1  # fails the first time, succeeds the second
-
-    monkeypatch.setattr(reset_mod, "push_thresholds_full_replace", _flaky_thresholds)
-    monkeypatch.setattr(reset_mod, "push_replenishment_full_replace", lambda: True)
-    _seed_inventory_data()
-
-    reset_mod.run_inventory_factory_reset_if_needed()
-    assert _marker() is False
-
-    # Simulate an ordinary sync repopulating local data in between launches
-    # (see the module's own docstring for why this can legitimately
-    # happen while the cloud still holds old rows) -- the retry must
-    # still clear it and this time succeed.
-    _seed_inventory_data()
-    reset_mod.run_inventory_factory_reset_if_needed()
-
-    assert _marker() is True
-    assert _counts()["thresholds"] == 0
 
 
 # --- 5. Fresh Inventory uploads after the migration persist normally -------
 
-def test_fresh_upload_after_completed_reset_is_never_touched(monkeypatch):
-    monkeypatch.setattr(reset_mod, "push_thresholds_full_replace", lambda: True)
-    monkeypatch.setattr(reset_mod, "push_replenishment_full_replace", lambda: True)
+def test_fresh_upload_after_completed_reset_is_never_touched():
     _seed_inventory_data()
     reset_mod.run_inventory_factory_reset_if_needed()
     assert _marker() is True

@@ -8,8 +8,7 @@ is built exactly once since there is no mode to rebuild for.
 import customtkinter as ctk
 from PIL import Image
 
-from app.inventory_refresh import MODULE_KEY as INVENTORY_MODULE_KEY
-from ui.components import ModuleRefreshControl, SecondaryButton
+from ui.components import SecondaryButton
 from ui.icons import get_icon
 from ui.inventory_automated_emails_page import InventoryAutomatedEmailsPage
 from ui.inventory_cwh_page import InventoryCwhPage
@@ -88,16 +87,6 @@ class InventoryModule(ctk.CTkFrame):
         ).pack(anchor="w")
 
         ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(0, 8))
-
-        # The single, module-wide "Refresh" action -- manual only, no
-        # automatic background poller for Inventory (a deliberate choice,
-        # confirmed with the user; Path Validator has one via
-        # app/module_sync_poller.py). Same shared component Path Validator
-        # uses (see ui/path_validator_module.py) -- no duplicated button
-        # logic between the two modules.
-        self.refresh_control = ModuleRefreshControl(sidebar, module_shell=self, module_key=INVENTORY_MODULE_KEY)
-        self.refresh_control.pack(fill="x", padx=12)
-        ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(8, 8))
 
         nav_container = ctk.CTkFrame(sidebar, fg_color="transparent")
         nav_container.pack(fill="x", padx=12)

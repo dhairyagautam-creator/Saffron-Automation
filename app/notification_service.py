@@ -1060,10 +1060,6 @@ def preview_email_batch(import_id: int, progress_callback=None) -> dict:
     if progress_callback:
         progress_callback("finalizing", label="Completed (preview only — nothing sent).")
 
-    from app.email_sync_service import sync_email_notifications_for_import
-
-    sync_email_notifications_for_import(import_id)
-
     return {
         "draft_count": draft_count,
         "unresolved_count": unresolved_count,
@@ -1254,12 +1250,6 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
     )
 
     progress_callback("finalizing", label="Completed.")
-
-    from app.email_sync_service import sync_email_notifications_for_import
-    from app.findings_sync_service import sync_findings_for_import
-
-    sync_findings_for_import(import_id)
-    sync_email_notifications_for_import(import_id)
 
     return {
         "sent_count": sent_count,

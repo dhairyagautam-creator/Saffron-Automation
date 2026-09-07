@@ -37,7 +37,6 @@ from app.excel_validation import SUPPORTED_EXTENSIONS, validate_inventory_report
 from app.inventory_email_settings_service import is_automatic_sending_enabled
 from app.inventory_notification_service import send_inventory_replenishment_emails
 from app.inventory_send_state import finish_sending, start_sending
-from app.inventory_sync_service import push_replenishment_full_replace
 from app.replenishment_service import evaluate_replenishment
 from ui.background_task import run_in_background
 from ui.components import Card, PrimaryButton, SectionHeader
@@ -152,24 +151,11 @@ class InventoryUploadPage(ctk.CTkFrame):
             # (app/cwh_service.py) from the exact rows evaluate_replenishment()
             # just excluded, for the separate Central Warehouse page. Guarded
             # so a bug here can never break the existing replenishment result
-            # the user is waiting on, same defensive pattern as the cloud
-            # sync call just below.
+            # the user is waiting on.
             try:
                 evaluate_cwh_stock(load_result["df"])
             except Exception as exc:
                 logger.error(f"Failed to evaluate Ahmedabad CWH stock: {exc}")
-            report_progress(92, "Syncing to the cloud...")
-            try:
-                # Full-replace push, not the ordinary Last-Modified-Wins
-                # sync_replenishment() -- this upload just replaced the
-                # entire local table with a fresh snapshot (see
-                # app/replenishment_service.evaluate_replenishment()), so
-                # the cloud must be cleared and re-pushed to match, not
-                # reconciled row-by-row (which has no delete concept and
-                # would pull stale rows back).
-                push_replenishment_full_replace()
-            except Exception as exc:
-                logger.error(f"Failed to sync inventory replenishment to the cloud: {exc}")
             report_progress(98, "Finalizing...")
             report_progress(100, "Done")
             return {"load": load_result, "replenishment_stats": replenishment_stats}

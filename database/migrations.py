@@ -96,36 +96,6 @@ def ensure_investigation_findings_concentration_columns() -> None:
                 logger.info(f"Migration: added {column_name} column to '{INVESTIGATION_FINDINGS_TABLE}'")
 
 
-def ensure_investigation_findings_sync_state_columns() -> None:
-    """Add the Phase 1 sync-reliability columns to investigation_findings if
-    they predate the dirty/cloud_version design (see app/findings_sync_service.py
-    and app/sync_service.reconcile_rows()):
-
-      * cloud_version -- the cloud row's own `updated_at` token this local row
-        last acknowledged (server-origin; compared only against the cloud's
-        current version, never a local clock).
-      * dirty -- 1 when a local business change hasn't been acknowledged by
-        the cloud yet.
-
-    Existing rows backfill to dirty=0 (assumed already in sync) and
-    cloud_version NULL; their first post-migration reconcile establishes a
-    version. Idempotent -- safe to run repeatedly."""
-    if not inspect(get_config_engine()).has_table(INVESTIGATION_FINDINGS_TABLE):
-        return
-    existing = _existing_columns(INVESTIGATION_FINDINGS_TABLE)
-    new_columns = {
-        "cloud_version": "TEXT",
-        "dirty": "INTEGER NOT NULL DEFAULT 0",
-    }
-    with get_config_engine().begin() as conn:
-        for column_name, column_type in new_columns.items():
-            if column_name not in existing:
-                conn.execute(
-                    text(f"ALTER TABLE {INVESTIGATION_FINDINGS_TABLE} ADD COLUMN {column_name} {column_type}")
-                )
-                logger.info(f"Migration: added {column_name} column to '{INVESTIGATION_FINDINGS_TABLE}'")
-
-
 def migrate_email_settings_to_app_settings() -> None:
     """One-time move from the old `email_settings` table to `app_settings`
     (renamed for clarity/consistency with the requested schema). Copies the
@@ -511,220 +481,84 @@ def drop_obsolete_employee_emails_table() -> None:
     logger.info("Migration: dropped obsolete 'employee_emails' table")
 
 
-def ensure_import_history_cloud_columns() -> None:
-    """Add cloud_id/synced_at/sync_origin to import_history for the Path
-    Validator cloud sync effort (see app/import_sync_service.py). cloud_id
-    is the client-generated UUID that ties an import together across
-    laptops -- local autoincrement ids collide across machines and can
-    never be used as the cross-machine key. sync_origin distinguishes an
-    import this machine ran itself ('local') from one reconstructed from
-    another machine's push ('remote') -- 'remote' imports skip local rule
-    evaluation and rely on synced findings instead (see
-    app/findings_sync_service.py). Pre-existing rows get cloud_id = NULL
-    (SQLite's unique index allows any number of NULLs) and sync_origin
-    defaults to 'local' -- they simply aren't visible to another laptop
-    until backfilled by hand, per the plan's explicit no-auto-backfill
-    decision."""
-    if not inspect(get_config_engine()).has_table(IMPORT_HISTORY_TABLE):
-        return
-    existing = _existing_columns(IMPORT_HISTORY_TABLE)
-    with get_config_engine().begin() as conn:
-        if "cloud_id" not in existing:
-            conn.execute(text(f"ALTER TABLE {IMPORT_HISTORY_TABLE} ADD COLUMN cloud_id TEXT"))
-            conn.execute(
-                text(f"CREATE UNIQUE INDEX IF NOT EXISTS uq_import_history_cloud_id ON {IMPORT_HISTORY_TABLE}(cloud_id)")
-            )
-        if "synced_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {IMPORT_HISTORY_TABLE} ADD COLUMN synced_at DATETIME"))
-        if "sync_origin" not in existing:
-            conn.execute(
-                text(f"ALTER TABLE {IMPORT_HISTORY_TABLE} ADD COLUMN sync_origin TEXT NOT NULL DEFAULT 'local'")
-            )
-    if "cloud_id" not in existing:
-        logger.info(f"Migration: added cloud_id/synced_at/sync_origin columns to '{IMPORT_HISTORY_TABLE}'")
-
-
-def ensure_active_session_cloud_columns() -> None:
-    """Add import_cloud_id/synced_at to active_session -- the shared "which
-    import is the team's current working session" pointer synced via
-    path_validator_active_session (see app/import_sync_service.py)."""
-    if not inspect(get_config_engine()).has_table(ACTIVE_SESSION_TABLE):
-        return
-    existing = _existing_columns(ACTIVE_SESSION_TABLE)
-    with get_config_engine().begin() as conn:
-        if "import_cloud_id" not in existing:
-            conn.execute(text(f"ALTER TABLE {ACTIVE_SESSION_TABLE} ADD COLUMN import_cloud_id TEXT"))
-        if "synced_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {ACTIVE_SESSION_TABLE} ADD COLUMN synced_at DATETIME"))
-    if "import_cloud_id" not in existing:
-        logger.info(f"Migration: added import_cloud_id/synced_at columns to '{ACTIVE_SESSION_TABLE}'")
-
-
-def ensure_investigation_findings_cloud_columns() -> None:
-    """Add cloud_id/updated_at/synced_at to investigation_findings for
-    cloud sync (see app/findings_sync_service.py). updated_at is backfilled
-    from each row's own created_at so pre-existing findings get a sane
-    initial value rather than NULL; every reviewer status change from here
-    on (app/findings_service.py's set_status()/set_notification_status())
-    bumps it, which is what the poller's delta-pull relies on."""
+def ensure_investigation_findings_updated_at_column() -> None:
+    """Add updated_at to investigation_findings if it predates this fix,
+    backfilled from each row's own created_at so pre-existing findings get
+    a sane initial value rather than NULL. Bumped on every reviewer status
+    change (app/findings_service.py's set_status()/set_notification_status())."""
     if not inspect(get_config_engine()).has_table(INVESTIGATION_FINDINGS_TABLE):
         return
     existing = _existing_columns(INVESTIGATION_FINDINGS_TABLE)
+    if "updated_at" in existing:
+        return
     with get_config_engine().begin() as conn:
-        if "cloud_id" not in existing:
-            conn.execute(text(f"ALTER TABLE {INVESTIGATION_FINDINGS_TABLE} ADD COLUMN cloud_id TEXT"))
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_investigation_findings_cloud_id "
-                    f"ON {INVESTIGATION_FINDINGS_TABLE}(cloud_id)"
-                )
-            )
-        if "updated_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {INVESTIGATION_FINDINGS_TABLE} ADD COLUMN updated_at DATETIME"))
-            conn.execute(
-                text(f"UPDATE {INVESTIGATION_FINDINGS_TABLE} SET updated_at = created_at WHERE updated_at IS NULL")
-            )
-        if "synced_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {INVESTIGATION_FINDINGS_TABLE} ADD COLUMN synced_at DATETIME"))
-    if "cloud_id" not in existing:
-        logger.info(
-            f"Migration: added cloud_id/updated_at/synced_at columns to '{INVESTIGATION_FINDINGS_TABLE}' "
-            "(updated_at backfilled from created_at)"
+        conn.execute(text(f"ALTER TABLE {INVESTIGATION_FINDINGS_TABLE} ADD COLUMN updated_at DATETIME"))
+        conn.execute(
+            text(f"UPDATE {INVESTIGATION_FINDINGS_TABLE} SET updated_at = created_at WHERE updated_at IS NULL")
         )
+    logger.info(
+        f"Migration: added updated_at column to '{INVESTIGATION_FINDINGS_TABLE}' (backfilled from created_at)"
+    )
 
 
-def ensure_email_notifications_cloud_columns() -> None:
-    """Add cloud_id/updated_at/synced_at to email_notifications for cloud
-    sync (see app/email_sync_service.py) -- same updated_at-backfilled-from-
-    created_at treatment as investigation_findings, for the same reason."""
+def ensure_email_notifications_updated_at_column() -> None:
+    """Add updated_at to email_notifications if it predates this fix --
+    same updated_at-backfilled-from-created_at treatment as
+    investigation_findings, for the same reason."""
     if not inspect(get_config_engine()).has_table(EMAIL_NOTIFICATIONS_TABLE):
         return
     existing = _existing_columns(EMAIL_NOTIFICATIONS_TABLE)
+    if "updated_at" in existing:
+        return
     with get_config_engine().begin() as conn:
-        if "cloud_id" not in existing:
-            conn.execute(text(f"ALTER TABLE {EMAIL_NOTIFICATIONS_TABLE} ADD COLUMN cloud_id TEXT"))
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_email_notifications_cloud_id "
-                    f"ON {EMAIL_NOTIFICATIONS_TABLE}(cloud_id)"
-                )
-            )
-        if "updated_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {EMAIL_NOTIFICATIONS_TABLE} ADD COLUMN updated_at DATETIME"))
-            conn.execute(
-                text(f"UPDATE {EMAIL_NOTIFICATIONS_TABLE} SET updated_at = created_at WHERE updated_at IS NULL")
-            )
-        if "synced_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {EMAIL_NOTIFICATIONS_TABLE} ADD COLUMN synced_at DATETIME"))
-    if "cloud_id" not in existing:
-        logger.info(
-            f"Migration: added cloud_id/updated_at/synced_at columns to '{EMAIL_NOTIFICATIONS_TABLE}' "
-            "(updated_at backfilled from created_at)"
+        conn.execute(text(f"ALTER TABLE {EMAIL_NOTIFICATIONS_TABLE} ADD COLUMN updated_at DATETIME"))
+        conn.execute(
+            text(f"UPDATE {EMAIL_NOTIFICATIONS_TABLE} SET updated_at = created_at WHERE updated_at IS NULL")
         )
+    logger.info(
+        f"Migration: added updated_at column to '{EMAIL_NOTIFICATIONS_TABLE}' (backfilled from created_at)"
+    )
 
 
-def ensure_workbook_connections_cloud_columns() -> None:
-    """Add storage_path/cloud_updated_at/synced_at/updated_at to
-    workbook_connections (see app/organization_data_sync_service.py).
-    storage_path replaces the local file_path's role once a workbook has
-    been pushed to Storage -- file_path itself is left alone (still used
-    to remember what was last manually browsed on this machine, if
-    anything). updated_at is the genuine local "last modified" timestamp
-    the app-wide Last-Modified-Wins rule (Milestone 35) compares against
-    the cloud's own updated_at -- distinct from cloud_updated_at, which
-    only ever records the cloud's timestamp as of the last successful
-    sync, not when this workbook was last connected locally. Backfilled
-    from cloud_updated_at (or now(), if never synced) so an existing
-    install doesn't start with a NULL that would always lose to the
-    cloud."""
+def ensure_workbook_connections_updated_at_column() -> None:
+    """Add updated_at to workbook_connections if it predates this fix --
+    the genuine local "last modified" timestamp, bumped in
+    app/workbook_connections.set_connection() every time a workbook is
+    (re)connected. Backfilled to now() so an existing install doesn't
+    start with a NULL."""
     if not inspect(get_config_engine()).has_table(WORKBOOK_CONNECTIONS_TABLE):
         return
     existing = _existing_columns(WORKBOOK_CONNECTIONS_TABLE)
+    if "updated_at" in existing:
+        return
     with get_config_engine().begin() as conn:
-        if "storage_path" not in existing:
-            conn.execute(text(f"ALTER TABLE {WORKBOOK_CONNECTIONS_TABLE} ADD COLUMN storage_path TEXT"))
-        if "cloud_updated_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {WORKBOOK_CONNECTIONS_TABLE} ADD COLUMN cloud_updated_at DATETIME"))
-        if "synced_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {WORKBOOK_CONNECTIONS_TABLE} ADD COLUMN synced_at DATETIME"))
-        if "updated_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {WORKBOOK_CONNECTIONS_TABLE} ADD COLUMN updated_at DATETIME"))
-            conn.execute(
-                text(
-                    f"UPDATE {WORKBOOK_CONNECTIONS_TABLE} SET updated_at = COALESCE(cloud_updated_at, CURRENT_TIMESTAMP) "
-                    "WHERE updated_at IS NULL"
-                )
-            )
-    if "storage_path" not in existing:
-        logger.info(
-            f"Migration: added storage_path/cloud_updated_at/synced_at/updated_at columns to "
-            f"'{WORKBOOK_CONNECTIONS_TABLE}'"
+        conn.execute(text(f"ALTER TABLE {WORKBOOK_CONNECTIONS_TABLE} ADD COLUMN updated_at DATETIME"))
+        conn.execute(
+            text(f"UPDATE {WORKBOOK_CONNECTIONS_TABLE} SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
         )
+    logger.info(f"Migration: added updated_at column to '{WORKBOOK_CONNECTIONS_TABLE}'")
 
 
-def ensure_payment_invoices_cloud_columns() -> None:
-    """Add cloud_id/updated_at/synced_at to payment_invoices for the
-    Payment Analytics cloud sync effort (see
-    app/payment_sync_service.py). updated_at is backfilled from each
-    row's own created_at -- these rows are immutable once inserted (only
-    ever created via a monthly append, or wiped wholesale by a Historical
-    Report re-run; individual rows are never edited in place), so
-    updated_at never needs bumping again after this one-time backfill."""
+def ensure_payment_invoices_updated_at_column() -> None:
+    """Add updated_at to payment_invoices if it predates this fix,
+    backfilled from each row's own created_at -- these rows are immutable
+    once inserted (only ever created via a monthly append, or wiped
+    wholesale by a Historical Report re-run; individual rows are never
+    edited in place), so updated_at never needs bumping again after this
+    one-time backfill."""
     if not inspect(get_config_engine()).has_table(PAYMENT_INVOICES_TABLE):
         return
     existing = _existing_columns(PAYMENT_INVOICES_TABLE)
-    with get_config_engine().begin() as conn:
-        if "cloud_id" not in existing:
-            conn.execute(text(f"ALTER TABLE {PAYMENT_INVOICES_TABLE} ADD COLUMN cloud_id TEXT"))
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_invoices_cloud_id "
-                    f"ON {PAYMENT_INVOICES_TABLE}(cloud_id)"
-                )
-            )
-        if "updated_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {PAYMENT_INVOICES_TABLE} ADD COLUMN updated_at DATETIME"))
-            conn.execute(
-                text(f"UPDATE {PAYMENT_INVOICES_TABLE} SET updated_at = created_at WHERE updated_at IS NULL")
-            )
-        if "synced_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {PAYMENT_INVOICES_TABLE} ADD COLUMN synced_at DATETIME"))
-    if "cloud_id" not in existing:
-        logger.info(
-            f"Migration: added cloud_id/updated_at/synced_at columns to '{PAYMENT_INVOICES_TABLE}' "
-            "(updated_at backfilled from created_at)"
-        )
-
-
-def ensure_outstanding_invoices_cloud_columns() -> None:
-    """Add cloud_id/synced_at to outstanding_invoices (see
-    app/payment_sync_service.py). No updated_at needed -- unlike
-    payment_invoices, this table is always synced as a full replace in
-    both directions (matching its local "Daily Refresh" delete-all +
-    reinsert behavior), never a delta-pull; cloud_id exists solely so the
-    followed_up checkbox toggle can address one specific row across
-    machines between uploads."""
-    if not inspect(get_config_engine()).has_table(OUTSTANDING_INVOICES_TABLE):
+    if "updated_at" in existing:
         return
-    existing = _existing_columns(OUTSTANDING_INVOICES_TABLE)
     with get_config_engine().begin() as conn:
-        if "cloud_id" not in existing:
-            conn.execute(text(f"ALTER TABLE {OUTSTANDING_INVOICES_TABLE} ADD COLUMN cloud_id TEXT"))
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_outstanding_invoices_cloud_id "
-                    f"ON {OUTSTANDING_INVOICES_TABLE}(cloud_id)"
-                )
-            )
-        if "synced_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {OUTSTANDING_INVOICES_TABLE} ADD COLUMN synced_at DATETIME"))
-        if "updated_at" not in existing:
-            conn.execute(text(f"ALTER TABLE {OUTSTANDING_INVOICES_TABLE} ADD COLUMN updated_at DATETIME"))
-            conn.execute(
-                text(f"UPDATE {OUTSTANDING_INVOICES_TABLE} SET updated_at = uploaded_at WHERE updated_at IS NULL")
-            )
-    if "cloud_id" not in existing:
-        logger.info(f"Migration: added cloud_id/synced_at/updated_at columns to '{OUTSTANDING_INVOICES_TABLE}'")
+        conn.execute(text(f"ALTER TABLE {PAYMENT_INVOICES_TABLE} ADD COLUMN updated_at DATETIME"))
+        conn.execute(
+            text(f"UPDATE {PAYMENT_INVOICES_TABLE} SET updated_at = created_at WHERE updated_at IS NULL")
+        )
+    logger.info(
+        f"Migration: added updated_at column to '{PAYMENT_INVOICES_TABLE}' (backfilled from created_at)"
+    )
 
 
 def ensure_cwh_stock_threshold_columns() -> None:
@@ -965,14 +799,10 @@ def run_startup_migrations() -> None:
     ensure_investigation_findings_division_column()
     ensure_inventory_new_sales_format_schema()
     ensure_hospital_suppression_enabled_in_user_mode()
-    ensure_import_history_cloud_columns()
-    ensure_active_session_cloud_columns()
-    ensure_investigation_findings_cloud_columns()
-    ensure_investigation_findings_sync_state_columns()
-    ensure_email_notifications_cloud_columns()
-    ensure_workbook_connections_cloud_columns()
-    ensure_payment_invoices_cloud_columns()
-    ensure_outstanding_invoices_cloud_columns()
+    ensure_investigation_findings_updated_at_column()
+    ensure_email_notifications_updated_at_column()
+    ensure_workbook_connections_updated_at_column()
+    ensure_payment_invoices_updated_at_column()
     ensure_cwh_stock_threshold_columns()
     ensure_manager_work_allocation_records_optional_columns()
     ensure_manager_work_allocation_records_source_engine_column()

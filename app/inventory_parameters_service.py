@@ -58,12 +58,6 @@ DISPLAY_MODE_RAW = "raw"
 DISPLAY_MODE_PACKS = "packs"
 DEFAULT_THRESHOLD_DISPLAY_MODE = DISPLAY_MODE_RAW
 
-# The Supabase `module_configurations.module_key` this module syncs under
-# (app/sync_service.py is generic and knows nothing about this value) --
-# reuses the exact same cloud table Path Validator Parameters already
-# uses (see app/rule_parameters.py), just a different module_key.
-MODULE_KEY = "inventory_parameters"
-
 
 def ensure_defaults() -> None:
     """Insert each parameter's default value if it doesn't already exist
@@ -221,56 +215,3 @@ def set_threshold_display_mode(value: str) -> None:
     finally:
         session.close()
     logger.info(f"Saved Inventory parameter {THRESHOLD_DISPLAY_MODE} = {value}")
-
-
-def get_full_configuration() -> dict:
-    """Returns Inventory's entire cloud-synced configuration as one flat
-    dict ({THRESHOLD_MULTIPLIER: value, CWH_THRESHOLD_MULTIPLIER: value,
-    THRESHOLD_DISPLAY_MODE: value}), ready to hand to
-    app.sync_service.push_config(). Flat, not nested by rule_name like
-    app/rule_parameters.py's version -- Inventory has no grouped rule
-    sections, just standalone parameters. Adding CWH_THRESHOLD_MULTIPLIER
-    here is the entire cloud-sync wiring it needs -- it rides the exact
-    same push (ui/inventory_settings_page.py's Save button) and pull
-    (app/inventory_refresh.py's pull_and_apply_configuration, already part
-    of the module-wide Refresh cycle) as the existing CFA multiplier, with
-    no new sync code required."""
-    return {
-        THRESHOLD_MULTIPLIER: str(get_threshold_multiplier()),
-        CWH_THRESHOLD_MULTIPLIER: str(get_cwh_threshold_multiplier()),
-        EXCESS_TRANSFER_CANDIDATE_MULTIPLIER: str(get_excess_transfer_candidate_multiplier()),
-        THRESHOLD_DISPLAY_MODE: get_threshold_display_mode(),
-    }
-
-
-def apply_full_configuration(config: dict) -> None:
-    """Writes every parameter in `config` into the local cache -- called
-    after a successful cloud push (to confirm the cache matches what was
-    just saved) and after a successful Refresh pull (to apply newly
-    downloaded values). An unrecognized key is ignored rather than
-    raising -- forward-compatible with a newer cloud config containing a
-    future parameter this app version doesn't know about yet."""
-    if THRESHOLD_MULTIPLIER in config:
-        set_threshold_multiplier(str(config[THRESHOLD_MULTIPLIER]))
-    if CWH_THRESHOLD_MULTIPLIER in config:
-        set_cwh_threshold_multiplier(str(config[CWH_THRESHOLD_MULTIPLIER]))
-    if EXCESS_TRANSFER_CANDIDATE_MULTIPLIER in config:
-        set_excess_transfer_candidate_multiplier(str(config[EXCESS_TRANSFER_CANDIDATE_MULTIPLIER]))
-    if THRESHOLD_DISPLAY_MODE in config:
-        set_threshold_display_mode(config[THRESHOLD_DISPLAY_MODE])
-
-
-def pull_and_apply_configuration() -> bool:
-    """Pulls the cloud Inventory Parameters config and applies it to the
-    local cache -- the module-wide Refresh action's first operation (see
-    app/inventory_refresh.py). Returns True if a config was live-pulled
-    (every other pull_* function in this codebase treats that as the
-    signal to re-render, not "did values actually differ"). Returns False
-    on a failed pull or an empty/never-pushed config."""
-    from app.sync_service import pull_config
-
-    result = pull_config(MODULE_KEY)
-    if not result.success or not result.config:
-        return False
-    apply_full_configuration(result.config)
-    return True

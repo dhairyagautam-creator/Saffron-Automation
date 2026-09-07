@@ -16,9 +16,7 @@ import customtkinter as ctk
 from loguru import logger
 from PIL import Image
 
-from app import module_sync_poller
 from app.mode_state import is_developer_mode, enter_developer_mode, exit_developer_mode
-from app.path_validator_refresh import MODULE_KEY as PATH_VALIDATOR_MODULE_KEY
 from ui.about_page import AboutPage
 from ui.developer_page import DeveloperPage
 from ui.email_center_page import EmailCenterPage
@@ -29,7 +27,7 @@ from ui.operations_page import OperationsPage
 from ui.organization_data_page import OrganizationDataPage
 from ui.parameters_page import ParametersPage
 from ui.settings_page import SettingsPage
-from ui.components import ModuleRefreshControl, SecondaryButton
+from ui.components import SecondaryButton
 from ui.theme import LOGO_PNG, Color, Font, Spacing
 
 # Pages shown in every mode, in sidebar order. The Developer page is
@@ -67,7 +65,6 @@ class PathValidatorModule(ctk.CTkFrame):
 
         self._build_shell()
         self.show_page("Master")
-        module_sync_poller.start(self, PATH_VALIDATOR_MODULE_KEY)
 
     # --- Re-entry from Home ------------------------------------------------
 
@@ -170,9 +167,6 @@ class PathValidatorModule(ctk.CTkFrame):
 
         ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(0, 8))
 
-        self._build_refresh_control(sidebar)
-        ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(8, 8))
-
         nav_container = ctk.CTkFrame(sidebar, fg_color="transparent")
         nav_container.pack(fill="x", padx=12)
 
@@ -198,18 +192,6 @@ class PathValidatorModule(ctk.CTkFrame):
             sidebar, text="← Back to Home", command=self._on_home
         ).pack(fill="x", padx=12, pady=Spacing.MD, side="bottom")
         ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(8, 0), side="bottom")
-
-    def _build_refresh_control(self, sidebar) -> None:
-        """The single, module-wide "Refresh" action: one button + status
-        label, built once as part of the sidebar shell (not per-page), so
-        it stays in the exact same place regardless of which Path
-        Validator page is showing. Uses the shared, reusable
-        ui.components.ModuleRefreshControl (Milestone 22) -- the same
-        component Inventory/Payments use for their own module-wide
-        Refresh, so this button's behavior isn't reimplemented per
-        module."""
-        self.refresh_control = ModuleRefreshControl(sidebar, module_shell=self, module_key=PATH_VALIDATOR_MODULE_KEY)
-        self.refresh_control.pack(fill="x", padx=12)
 
     def _build_pages(self, parent) -> None:
         container = ctk.CTkFrame(parent, fg_color=Color.SURFACE)

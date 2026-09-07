@@ -17,7 +17,6 @@ import customtkinter as ctk
 from loguru import logger
 
 from app.excel_validation import SUPPORTED_EXTENSIONS, load_sales_report
-from app.inventory_sync_service import push_thresholds_full_replace
 from app.threshold_service import generate_thresholds_from_sales
 from ui.background_task import run_in_background
 from ui.components import Card, PrimaryButton, SectionHeader
@@ -129,18 +128,6 @@ class SalesUploadPage(ctk.CTkFrame):
 
             report_progress(85, "Generating thresholds...")
             threshold_stats = generate_thresholds_from_sales(load_result["df"])
-            report_progress(92, "Syncing to the cloud...")
-            try:
-                # Full-replace push, not the ordinary Last-Modified-Wins
-                # sync_thresholds() -- this upload just replaced the
-                # entire local table with a fresh snapshot (see
-                # app/threshold_service.generate_thresholds_from_sales()),
-                # so the cloud must be cleared and re-pushed to match, not
-                # reconciled row-by-row (which has no delete concept and
-                # would pull stale rows back).
-                push_thresholds_full_replace()
-            except Exception as exc:
-                logger.error(f"Failed to sync inventory thresholds to the cloud: {exc}")
             report_progress(98, "Finalizing...")
             report_progress(100, "Done")
             return {"load": load_result, "threshold_stats": threshold_stats}

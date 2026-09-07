@@ -175,10 +175,8 @@ def write_rows_to_excel(
 
     Never raises for an ordinary write failure (permission denied, disk
     full, the file open elsewhere) -- returns ExportResult(success=False,
-    error_message=...) instead, exactly like this codebase's other
-    file-producing operations (see app/sync_service.py's RowsSyncResult
-    convention) report failure as data, not an exception the caller must
-    remember to catch."""
+    error_message=...) instead, so failure is reported as data, not an
+    exception the caller must remember to catch."""
     try:
         if progress_callback:
             progress_callback(5, "Building workbook...")

@@ -6,16 +6,6 @@ behavior from the Parameters page without touching the codebase.
 Scoped by environment (User Mode vs Developer Mode — see app/mode_state.py):
 every read/write defaults to the CURRENT mode's environment, so tuning a
 threshold in Developer Mode never affects production until published.
-
-Version 2.0, Milestone 9: get_full_configuration()/apply_full_configuration()
-below are the bridge to app/sync_service.py's cloud sync -- they always
-operate on the User Mode environment specifically, regardless of which mode
-the caller happens to be in, and only cover CLOUD_SYNCED_RULE_NAMES.
-Developer Mode's parameters (e.g. Hospital Suppression) are deliberately
-excluded and never leave this machine: Developer Mode is explicitly a
-per-machine, never-shared concept (see app/mode_state.py's docstring), so
-syncing it to a shared cloud config would leak one person's local
-experimental tuning into what every other laptop pulls down.
 """
 
 from loguru import logger
@@ -68,14 +58,6 @@ DEFAULT_PARAMETERS = {
         "cluster_bucket_edges": "30,40,50,60,70,80,90,100",
     },
 }
-
-# The Supabase `module_configurations.module_key` this module syncs under
-# (app/sync_service.py is generic and knows nothing about this value).
-MODULE_KEY = "path_validator_parameters"
-
-# Rule sections included in cloud sync. HOSPITAL_SUPPRESSION is
-# deliberately excluded -- see the module docstring above.
-CLOUD_SYNCED_RULE_NAMES = ("SAME_LOCATION", "HOURS_WORKED", "DASHBOARD")
 
 
 def ensure_defaults() -> None:
@@ -146,57 +128,3 @@ def set_parameter(rule_name: str, parameter_name: str, value: str, environment: 
         session.close()
 
     logger.info(f"Saved parameter {environment}.{rule_name}.{parameter_name} = {value}")
-
-
-def get_full_configuration() -> dict:
-    """Returns the entire cloud-synced Path Validator configuration --
-    every rule in CLOUD_SYNCED_RULE_NAMES, always the User Mode
-    (environment="user") values -- as one nested dict ({rule_name:
-    {parameter_name: value}}), ready to hand to
-    app.sync_service.push_config(). Whatever parameters exist under each
-    rule_name are included automatically, so a future parameter added to
-    DEFAULT_PARAMETERS is picked up with no change here."""
-    return {
-        rule_name: get_parameters(rule_name, environment=USER_ENVIRONMENT)
-        for rule_name in CLOUD_SYNCED_RULE_NAMES
-    }
-
-
-def pull_and_apply_configuration() -> bool:
-    """Pulls the cloud Path Validator Parameters config and applies it to
-    the local User Mode cache -- the same pull+apply combo
-    ui/parameters_page.py's Refresh used to perform on its own, now the
-    Parameters entry in the module-wide Refresh action's operation list
-    (see app/path_validator_refresh.py). Returns True if a config was
-    live-pulled (even if applying it happened to change nothing locally --
-    every other pull_* function in this codebase treats "the pull
-    succeeded" as the signal to re-render, not "did values actually
-    differ"). Returns False on a failed pull or an empty/never-pushed
-    config."""
-    from app.sync_service import pull_config
-
-    result = pull_config(MODULE_KEY)
-    if not result.success or not result.config:
-        return False
-    apply_full_configuration(result.config)
-    return True
-
-
-def apply_full_configuration(config: dict) -> None:
-    """Writes every rule/parameter in `config` into the local User Mode
-    cache -- called after a successful cloud push (to confirm the cache
-    matches what was just saved) and after a successful Refresh pull (to
-    apply newly downloaded values). A rule_name/parameter this function
-    doesn't recognize is written anyway (forward compatible with a newer
-    cloud config containing a future parameter an older app version
-    doesn't know about by name -- it still gets cached and will simply be
-    unused until the UI catches up)."""
-    parameter_count = 0
-    for rule_name, parameters in config.items():
-        for parameter_name, value in parameters.items():
-            set_parameter(rule_name, parameter_name, str(value), environment=USER_ENVIRONMENT)
-            parameter_count += 1
-    logger.info(
-        f"Local cache updated from cloud configuration: {parameter_count} parameter(s) "
-        f"across {len(config)} rule section(s)"
-    )

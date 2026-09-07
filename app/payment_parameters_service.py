@@ -21,17 +21,6 @@ from database.models import PaymentAnalyticsParameter
 HISTORICAL_RISK_SCORING = "HISTORICAL_RISK_SCORING"
 COLLECTIONS_AGEING = "COLLECTIONS_AGEING"
 
-# The Supabase `module_configurations.module_key` this module syncs under
-# (app/sync_service.py is generic and knows nothing about this value) --
-# reuses the exact same cloud table Path Validator/Inventory Parameters
-# already use, just a different module_key.
-MODULE_KEY = "payment_analytics_parameters"
-
-# Every rule section this module manages -- unlike app/rule_parameters.py,
-# there is no Developer-Mode-only section to exclude (Payment Analytics
-# has no Developer Mode concept of its own), so every rule syncs.
-CLOUD_SYNCED_RULE_NAMES = (HISTORICAL_RISK_SCORING, COLLECTIONS_AGEING)
-
 DEFAULT_PARAMETERS = {
     # Green/Yellow/Orange are each "average payment days below this value";
     # Red is everything at or above orange_max_days. See
@@ -110,45 +99,6 @@ def set_parameter(rule_name: str, parameter_name: str, value: str) -> None:
     finally:
         session.close()
     logger.info(f"Saved Payment Analytics parameter {rule_name}.{parameter_name} = {value}")
-
-
-def get_full_configuration() -> dict:
-    """Returns Payment Analytics' entire cloud-synced configuration as one
-    nested dict ({rule_name: {parameter_name: value}}) covering every rule
-    in CLOUD_SYNCED_RULE_NAMES, ready to hand to
-    app.sync_service.push_config() -- mirrors app/rule_parameters.py's
-    get_full_configuration() exactly, minus the environment dimension
-    (Payment Analytics has none)."""
-    return {rule_name: get_parameters(rule_name) for rule_name in CLOUD_SYNCED_RULE_NAMES}
-
-
-def apply_full_configuration(config: dict) -> None:
-    """Writes every rule/parameter in `config` into the local cache --
-    called after a successful cloud push (to confirm the cache matches
-    what was just saved) and after a successful Refresh pull (to apply
-    newly downloaded values). A rule_name/parameter this function doesn't
-    recognize is written anyway (forward-compatible with a newer cloud
-    config containing a future parameter an older app version doesn't
-    know about by name)."""
-    for rule_name, parameters in config.items():
-        for parameter_name, value in parameters.items():
-            set_parameter(rule_name, parameter_name, str(value))
-
-
-def pull_and_apply_configuration() -> bool:
-    """Pulls the cloud Payment Analytics Parameters config and applies it
-    to the local cache -- the module-wide Refresh action's first
-    operation (see app/payment_refresh.py). Returns True if a config was
-    live-pulled (every other pull_* function in this codebase treats that
-    as the signal to re-render). Returns False on a failed pull or an
-    empty/never-pushed config."""
-    from app.sync_service import pull_config
-
-    result = pull_config(MODULE_KEY)
-    if not result.success or not result.config:
-        return False
-    apply_full_configuration(result.config)
-    return True
 
 
 def get_historical_risk_thresholds() -> tuple[float, float, float]:

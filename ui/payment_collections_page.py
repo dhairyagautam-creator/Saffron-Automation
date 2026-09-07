@@ -17,7 +17,6 @@ ctk.CTkCheckBox widget -- same interaction, same "grey out and move to
 the bottom" behavior, just backed by a widget that actually scales.
 """
 
-import threading
 from datetime import date, datetime
 from pathlib import Path
 from tkinter import filedialog
@@ -218,13 +217,6 @@ class _UploadCard(Card):
             if result["success"]:
                 report_progress(97, "Processing invoices...")
                 result["engine"] = process_outstanding_report(result["df"])
-                report_progress(99, "Syncing to the cloud...")
-                try:
-                    from app.payment_sync_service import sync_outstanding_invoices
-
-                    sync_outstanding_invoices()
-                except Exception as exc:
-                    logger.error(f"Failed to sync outstanding invoices to the cloud: {exc}")
             return result
 
         def on_progress(percent, message):
@@ -671,15 +663,3 @@ class PaymentCollectionsPage(ctk.CTkFrame):
         invoice["followed_up"] = not invoice["followed_up"]
         set_follow_up(invoice_id, invoice["followed_up"])
         self._render_table()
-        self._push_followup_in_background(invoice_id)
-
-    def _push_followup_in_background(self, invoice_id: int) -> None:
-        def worker() -> None:
-            try:
-                from app.payment_sync_service import push_outstanding_invoice_followup
-
-                push_outstanding_invoice_followup(invoice_id)
-            except Exception as exc:
-                logger.error(f"Failed to sync follow-up state for invoice_id={invoice_id}: {exc}")
-
-        threading.Thread(target=worker, daemon=True).start()

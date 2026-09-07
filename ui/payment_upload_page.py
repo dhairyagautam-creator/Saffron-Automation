@@ -26,7 +26,6 @@ from loguru import logger
 
 from app.excel_validation import SUPPORTED_EXTENSIONS, load_historical_payment_report, load_monthly_payment_report
 from app.payment_analytics_service import process_historical_report, process_monthly_report
-from app.payment_sync_service import sync_active_months, sync_customer_profiles, sync_invoices
 from ui.background_task import run_in_background
 from ui.components import (
     Card,
@@ -143,13 +142,6 @@ class _HistoricalReportCard(Card):
             if result["success"]:
                 report_progress(97, "Processing invoices...")
                 result["engine"] = process_historical_report(result["df"])
-                report_progress(99, "Syncing to the cloud...")
-                try:
-                    sync_invoices()
-                    sync_active_months()
-                    sync_customer_profiles()
-                except Exception as exc:
-                    logger.error(f"Failed to sync historical payment data to the cloud: {exc}")
             return result
 
         def on_progress(percent, message):
@@ -321,14 +313,6 @@ class _MonthlyReportCard(Card):
             if result["success"]:
                 report_progress(97, "Checking rolling window...")
                 result["engine"] = process_monthly_report(result["df"])
-                if result["engine"]["success"]:
-                    report_progress(99, "Syncing to the cloud...")
-                    try:
-                        sync_invoices()
-                        sync_active_months()
-                        sync_customer_profiles()
-                    except Exception as exc:
-                        logger.error(f"Failed to sync monthly payment data to the cloud: {exc}")
             return result
 
         def on_progress(percent, message):
