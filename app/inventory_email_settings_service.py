@@ -30,7 +30,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import InventoryParameter
 
 INVENTORY_SENDER_EMAIL = "inventory_sender_email"
@@ -89,7 +89,7 @@ def get_settings() -> dict:
 def save_settings(sender_email: str, app_password: str, automatic_sending_enabled: bool) -> None:
     """Upsert all three settings. Mirrors
     app.email_settings_service.save_settings()'s exact shape."""
-    now = datetime.now()
+    now = utcnow()
     session = get_config_session()
     try:
         _set_parameter(session, INVENTORY_SENDER_EMAIL, sender_email, now)

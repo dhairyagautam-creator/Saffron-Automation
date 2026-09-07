@@ -30,7 +30,7 @@ from app.inventory_email_recipients_service import (
     update_recipient,
 )
 from app.table_export_service import default_export_filename, export_rows_with_ui
-from database.connection import get_config_session
+from database.connection import get_config_session, to_local
 from database.models import InventoryEmailNotification
 from ui.components import (
     Card,
@@ -340,7 +340,7 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
 
         tree = styled_treeview(self._log_container, LOG_COLUMNS, LOG_HEADINGS, LOG_WIDTHS, height=10)
         for row in rows:
-            sent_at_text = row.sent_at.strftime("%Y-%m-%d %H:%M") if row.sent_at else "-"
+            sent_at_text = to_local(row.sent_at).strftime("%Y-%m-%d %H:%M") if row.sent_at else "-"
             # Same dict both feeds the Treeview's own `values=` tuple and the
             # exported row -- one source of truth, never two separately
             # maintained value lists (same pattern as ui/email_center_page.py).

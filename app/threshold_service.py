@@ -56,7 +56,7 @@ import pandas as pd
 from loguru import logger
 
 from app.inventory_parameters_service import DISPLAY_MODE_PACKS, get_threshold_display_mode, get_threshold_multiplier
-from database.connection import get_config_session
+from database.connection import get_config_session, to_local, utcnow
 from database.models import InventoryThreshold
 
 
@@ -421,7 +421,7 @@ def generate_thresholds_from_sales(df: pd.DataFrame) -> dict:
         }
 
     created = 0
-    now = datetime.now()
+    now = utcnow()
 
     session = get_config_session()
     try:
@@ -493,7 +493,7 @@ def get_all_thresholds() -> list[dict]:
                 "raw_threshold": row.raw_threshold,
                 "packed_threshold": row.packed_threshold,
                 "threshold_display": format_threshold_display(row.packed_threshold, row.packing),
-                "last_updated": row.last_updated.strftime("%Y-%m-%d") if row.last_updated else "",
+                "last_updated": to_local(row.last_updated).strftime("%Y-%m-%d") if row.last_updated else "",
             }
             for row in rows
         ]

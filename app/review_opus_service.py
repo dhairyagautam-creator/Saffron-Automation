@@ -68,6 +68,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.config import REVIEW_UPLOADS_DIR
+from database.connection import utcnow
 from app.hq_distribution_service import get_valid_hqs_for_division
 from app.review_opus_mapping import OPUS_HQ_BLOCKS_BY_DIVISION
 from app.review_schemas import MonthFamily
@@ -769,6 +770,6 @@ def generate_opus_summary(division: str, report_progress=None) -> dict:
     )
     return {
         "success": True, "division": division, "file_path": str(out_path),
-        "generated_at": datetime.now(), "hq_count": len(computed),
+        "generated_at": utcnow(), "hq_count": len(computed),
         "unresolved_hqs": unresolved, "errors": [],
     }

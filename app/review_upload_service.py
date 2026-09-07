@@ -19,7 +19,7 @@ from loguru import logger
 from app.config import REVIEW_UPLOADS_DIR
 from app.review_schemas import REVIEW_FILE_SLOTS, TOTAL_REQUIRED_SLOTS
 from app.review_validation import validate_review_file
-from database.connection import get_session
+from database.connection import get_session, utcnow
 from database.models import ReviewFileSlot
 
 
@@ -123,7 +123,7 @@ def upload_review_file(slot_id: str, source_path: str) -> dict:
         row.errors_json = json.dumps(result["errors"])
         row.row_count = result["row_count"]
         row.column_count = result["column_count"]
-        row.uploaded_at = datetime.now()
+        row.uploaded_at = utcnow()
         session.commit()
     finally:
         session.close()

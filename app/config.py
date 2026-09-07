@@ -94,19 +94,29 @@ def _migrate_legacy_data_next_to_exe() -> None:
     """One-time copy of database files from the old next-to-the-exe location
     (BASE_DIR) into the new writable DATA_DIR, for anyone upgrading from a
     build that predates this split. No-op (and never raises) once the
-    writable copy exists or there's nothing legacy to migrate."""
+    writable copy exists or there's nothing legacy to migrate.
+
+    Copies the WAL/SHM sidecar files alongside the main .db, not just the
+    .db itself -- the connection is opened in WAL mode (see
+    database/connection.py), and if the old install's last run didn't shut
+    down cleanly, recent writes can still be sitting in -wal, not yet
+    checkpointed into the .db file. Copying only the .db would silently
+    leave that data behind. A -wal paired with its .db is valid at any
+    path, so SQLite replays it normally the first time the new location is
+    opened."""
     if BASE_DIR == DATA_DIR:
         return  # running from source; there is no "legacy" location
     legacy_db_dir = BASE_DIR / "database"
     if not legacy_db_dir.is_dir():
         return
     try:
-        for legacy_db in legacy_db_dir.glob("*.db"):
-            target = DATABASE_PATH.parent / legacy_db.name
-            if target.exists():
-                continue
-            shutil.copy2(legacy_db, target)
-            logger.info(f"Migrated existing database {legacy_db.name} to writable location: {target}")
+        for pattern in ("*.db", "*.db-wal", "*.db-shm"):
+            for legacy_file in legacy_db_dir.glob(pattern):
+                target = DATABASE_PATH.parent / legacy_file.name
+                if target.exists():
+                    continue
+                shutil.copy2(legacy_file, target)
+                logger.info(f"Migrated existing database file {legacy_file.name} to writable location: {target}")
     except Exception as exc:
         logger.warning(f"Legacy database migration skipped due to an error: {exc!r}")
 

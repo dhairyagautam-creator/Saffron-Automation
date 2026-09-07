@@ -28,7 +28,7 @@ from app.geo_utils import haversine_km
 from app.hierarchy_parser import ANALYZABLE_DESIGNATIONS, get_all_designations
 from app.rule_parameters import get_parameters
 from app.timing import get_current_report
-from database.connection import get_data_engine, get_session
+from database.connection import get_data_engine, get_session, utcnow
 from database.import_service import IMPORT_ID_COLUMN, RAW_VISITS_TABLE
 from database.models import InvestigationFinding
 
@@ -289,8 +289,8 @@ def evaluate(import_id: int) -> dict:
                         cluster_lat=finding["cluster_lat"],
                         cluster_lon=finding["cluster_lon"],
                         division=finding["division"],
-                        created_at=datetime.now(),
-                        updated_at=datetime.now(),
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
                         **outcome,
                     )
                 )

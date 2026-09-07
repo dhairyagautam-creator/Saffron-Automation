@@ -96,7 +96,7 @@ from app.rule_parameters import get_parameters
 from app.send_state import update_progress
 from app.smtp_service import open_smtp_connection, send_via_connection
 from app.timing import PhaseTimer, get_current_report
-from database.connection import get_data_engine, get_session
+from database.connection import get_data_engine, get_session, utcnow
 from database.import_service import RAW_VISITS_TABLE
 from database.models import EmailNotification, ImportHistory, InvestigationFinding
 
@@ -1031,8 +1031,8 @@ def preview_email_batch(import_id: int, progress_callback=None) -> dict:
                     body=draft["body"],
                     finding_ids=draft["finding_ids"],
                     status=draft["status"],
-                    created_at=datetime.now(),
-                    updated_at=datetime.now(),
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
                 )
             )
         session.commit()
@@ -1120,8 +1120,8 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
                             body=draft["body"],
                             finding_ids=draft["finding_ids"],
                             status="Unresolved",
-                            created_at=datetime.now(),
-                            updated_at=datetime.now(),
+                            created_at=utcnow(),
+                            updated_at=utcnow(),
                         )
                     )
                     unresolved_count += 1
@@ -1135,8 +1135,8 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
                             body=draft["body"],
                             finding_ids=draft["finding_ids"],
                             status=STATUS_SKIPPED_NO_DATA,
-                            created_at=datetime.now(),
-                            updated_at=datetime.now(),
+                            created_at=utcnow(),
+                            updated_at=utcnow(),
                         )
                     )
                     skipped_count += 1
@@ -1165,8 +1165,8 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
                                 finding_ids=draft["finding_ids"],
                                 status="Failed",
                                 error_message=str(exc),
-                                created_at=datetime.now(),
-                                updated_at=datetime.now(),
+                                created_at=utcnow(),
+                                updated_at=utcnow(),
                             )
                         )
                         failed_count += 1
@@ -1181,9 +1181,9 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
                                 body=draft["body"],
                                 finding_ids=draft["finding_ids"],
                                 status="Sent",
-                                created_at=datetime.now(),
-                                updated_at=datetime.now(),
-                                sent_at=datetime.now(),
+                                created_at=utcnow(),
+                                updated_at=utcnow(),
+                                sent_at=utcnow(),
                             )
                         )
                         sent_count += 1

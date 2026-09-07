@@ -50,7 +50,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.geoapify_settings_service import get_geoapify_api_key
 from app.geo_utils import haversine_km
-from database.connection import get_session
+from database.connection import get_session, utcnow
 from database.models import GeocodeCache
 
 PROVIDER = "Geoapify"
@@ -269,7 +269,7 @@ def _store_cached_address(lat: float, lon: float, address: str) -> None:
                 longitude=lon,
                 address=address,
                 provider=PROVIDER,
-                created_at=datetime.now(),
+                created_at=utcnow(),
             )
         )
         session.commit()

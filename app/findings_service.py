@@ -8,7 +8,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from database.connection import get_session
+from database.connection import get_session, utcnow
 from database.models import InvestigationFinding
 
 # Notification statuses that mean the canonical suppression pass withheld this
@@ -117,7 +117,7 @@ def set_notification_status(finding_id: int, notification_status: str, suppressi
         finding.notification_status = notification_status
         if suppression_reason is not None:
             finding.suppression_reason = suppression_reason
-        finding.updated_at = datetime.now()
+        finding.updated_at = utcnow()
         session.commit()
     finally:
         session.close()
@@ -139,7 +139,7 @@ def note_suppression_check_issue(finding_id: int, note: str) -> None:
         if finding is None:
             raise ValueError(f"No finding with id {finding_id}")
         finding.suppression_reason = note
-        finding.updated_at = datetime.now()
+        finding.updated_at = utcnow()
         session.commit()
     finally:
         session.close()
@@ -170,7 +170,7 @@ def set_hospital_suppression(
         finding.hospital_lat = hospital_lat
         finding.hospital_lon = hospital_lon
         finding.hospital_distance_meters = distance_meters
-        finding.updated_at = datetime.now()
+        finding.updated_at = utcnow()
         session.commit()
     finally:
         session.close()

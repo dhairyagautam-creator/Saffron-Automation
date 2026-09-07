@@ -56,7 +56,7 @@ import pandas as pd
 from loguru import logger
 
 from app.payment_parameters_service import get_historical_risk_thresholds
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import PaymentActiveMonth, PaymentCustomerProfile, PaymentInvoice
 
 RISK_GREEN = "Green"
@@ -161,9 +161,13 @@ def _parse_invoice_rows(df: pd.DataFrame) -> tuple[list[dict], list[dict]]:
     """Steps 1-2: read every row into an invoice dict -- Party Name, Type,
     Inv. No., LR/Due/Clear Date, Payment Days, plus the calendar
     `(year, month_number)` derived from LR Date (see module docstring).
-    Rows with a missing Party Name, a missing/invalid LR or Clear Date, or
-    a negative computed Payment Days are skipped and returned in `errors`
-    instead, never raised.
+    Rows with a missing Party Name, a missing Invoice Number, a
+    missing/invalid LR or Clear Date, or a negative computed Payment Days
+    are skipped and returned in `errors` instead, never raised. Invoice
+    Number is required (not just retained) so that
+    UNIQUE(party_name, invoice_no, month) -- the retry-safety guard against
+    re-uploading the same file -- can never be silently bypassed by a NULL
+    (SQLite never treats two NULLs as equal in a UNIQUE constraint).
 
     Shared by both process_historical_report() and
     process_monthly_report() -- the two entry points differ only in what
@@ -182,6 +186,10 @@ def _parse_invoice_rows(df: pd.DataFrame) -> tuple[list[dict], list[dict]]:
 
         if party_name is None:
             errors.append({"row": display_row, "party_name": None, "invoice_no": invoice_no, "reason": "Missing Party Name"})
+            continue
+
+        if invoice_no is None:
+            errors.append({"row": display_row, "party_name": party_name, "invoice_no": None, "reason": "Missing Invoice Number"})
             continue
 
         lr_date = _parse_date(row.get("LR Date"))
@@ -321,7 +329,7 @@ def process_historical_report(df: pd.DataFrame) -> dict:
     }
     active_invoices = [inv for key in sorted(active_keys) for inv in by_key[key]]
 
-    now = datetime.now()
+    now = utcnow()
     session = get_config_session()
     try:
         session.query(PaymentInvoice).delete()
@@ -449,7 +457,7 @@ def process_monthly_report(df: pd.DataFrame) -> dict:
 
         # --- Accept: insert the new month, evict the oldest if the window
         # is now over capacity, then recalculate everything downstream. ---
-        now = datetime.now()
+        now = utcnow()
         for invoice in matched:
             session.add(PaymentInvoice(**invoice, created_at=now))
         session.add(

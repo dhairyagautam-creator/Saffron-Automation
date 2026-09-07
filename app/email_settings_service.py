@@ -13,7 +13,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import AppSettings
 
 # The consolidated master report's recipient when nothing has been saved
@@ -76,7 +76,7 @@ def save_settings(
             row.master_email_address = master_email.strip() or DEFAULT_MASTER_EMAIL
         elif not row.master_email_address:
             row.master_email_address = DEFAULT_MASTER_EMAIL
-        row.updated_at = datetime.now()
+        row.updated_at = utcnow()
         session.commit()
         saved_master_email = row.master_email_address
     finally:

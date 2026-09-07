@@ -10,17 +10,63 @@ so the ~370 existing call sites keep working; they no longer mean anything
 different from each other.
 """
 
+from datetime import datetime, timezone
+
 from loguru import logger
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import DATABASE_PATH
 
 Base = declarative_base()
 
+
+def utcnow() -> datetime:
+    """Naive UTC now -- the exact shape every bookkeeping timestamp column
+    already stores (no tzinfo), just backed by UTC instead of local time.
+    Use this (never datetime.now()) for created_at/updated_at/last_updated/
+    uploaded_at/sent_at/activated_at/imported_at and similar -- any
+    timestamp that could ever be compared across machines with different
+    clocks/timezones once sync exists (see docs/SYNC_DESIGN.md). This
+    codebase already hit exactly this bug once (Milestone 53: a naive local
+    timestamp compared against Supabase's naive-UTC one, permanently
+    "losing" every comparison). Deliberately not datetime.utcnow() (or a
+    timezone-aware datetime.now(timezone.utc)) -- the former is deprecated
+    since Python 3.12, the latter would carry tzinfo that older naive rows
+    written before this fix don't have, breaking any direct Python
+    comparison between them."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def to_local(dt: datetime | None) -> datetime | None:
+    """The inverse of utcnow(): a stored (naive UTC) bookkeeping timestamp,
+    converted to whatever timezone THIS machine is actually running in --
+    via the OS, not a hardcoded offset, so display stays correct even if
+    this app is ever run somewhere other than where its data was written.
+    None passes through as None. Use this at every point a bookkeeping
+    timestamp is shown to a user (a label, a treeview cell, an exported
+    column) -- never render a stored value's raw .strftime() directly, or
+    it displays as UTC wall-clock time instead of the viewer's own."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+
+
 DB_PATH = DATABASE_PATH
 
 _engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+
+
+@event.listens_for(_engine, "connect")
+def _enable_wal_mode(dbapi_connection, connection_record) -> None:
+    """WAL instead of SQLite's default rollback-journal mode -- readers
+    never block on a writer (and vice versa), which matters once more than
+    one process/thread can touch this file at a time. Set per-connection
+    (SQLite pragmas aren't persistent across connections in every driver
+    configuration), so every new connection gets it, not just the first."""
+    dbapi_connection.execute("PRAGMA journal_mode=WAL")
+
+
 _Session = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
 

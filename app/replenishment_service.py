@@ -63,7 +63,7 @@ from app.threshold_service import (
     normalize_match_key,
     round_up_to_pack,
 )
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import InventoryReplenishment
 
 STATUS_REPLENISHMENT_REQUIRED = "Replenishment Required"
@@ -174,7 +174,7 @@ def evaluate_replenishment(df: pd.DataFrame) -> dict:
     skipped_no_threshold = 0
     replenishment_required = 0
     healthy = 0
-    now = datetime.now()
+    now = utcnow()
     rows_by_key: dict[tuple, InventoryReplenishment] = {}
 
     session = get_config_session()

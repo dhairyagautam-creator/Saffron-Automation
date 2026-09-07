@@ -60,7 +60,7 @@ from app.doj_eligibility_service import (
 from app.hierarchy_parser import find_by_employee_code
 from app.manager_work_allocation_shared import parse_month
 from app.work_distribution_parameters_service import get_all as get_parameters
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import WorkDistributionDoctor, WorkDistributionFinding
 
 STATUS_HEALTHY = "Healthy"
@@ -311,7 +311,7 @@ def process_work_distribution_report(doctors: list) -> dict:
         for code, group in abm_groups.items()
     ]
 
-    now = datetime.now()
+    now = utcnow()
     session = get_config_session()
     try:
         deleted_doctors = session.query(WorkDistributionDoctor).delete()

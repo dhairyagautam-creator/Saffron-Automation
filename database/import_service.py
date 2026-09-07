@@ -12,7 +12,7 @@ from loguru import logger
 from sqlalchemy import inspect, text
 
 from app.timing import get_current_report
-from database.connection import get_data_engine, get_session
+from database.connection import get_data_engine, get_session, utcnow
 from database.models import ImportHistory
 
 RAW_VISITS_TABLE = "raw_visits"
@@ -52,7 +52,7 @@ def save_import(df: pd.DataFrame, file_name: str) -> dict:
         try:
             history = ImportHistory(
                 file_name=file_name,
-                imported_at=datetime.now(),
+                imported_at=utcnow(),
                 rows_imported=rows_imported,
                 duplicates_removed=duplicates_removed,
             )

@@ -10,7 +10,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from database.connection import get_session
+from database.connection import get_session, utcnow
 from database.models import ActiveSession, ImportHistory
 
 _SINGLETON_ID = 1
@@ -47,10 +47,10 @@ def set_active_import(import_id: int) -> None:
         row = session.query(ActiveSession).filter_by(id=_SINGLETON_ID).first()
         if row:
             row.import_id = import_id
-            row.activated_at = datetime.now()
+            row.activated_at = utcnow()
         else:
             session.add(
-                ActiveSession(id=_SINGLETON_ID, import_id=import_id, activated_at=datetime.now())
+                ActiveSession(id=_SINGLETON_ID, import_id=import_id, activated_at=utcnow())
             )
         session.commit()
     finally:

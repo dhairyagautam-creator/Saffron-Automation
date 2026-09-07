@@ -7,7 +7,7 @@ calculation, threshold, or finding -- only by the Dashboard's own display.
 from datetime import datetime
 from pathlib import Path
 
-from database.connection import get_config_session
+from database.connection import get_config_session, to_local, utcnow
 from database.models import WorkDistributionUploadLog
 
 
@@ -21,7 +21,7 @@ def record_upload(file_path: str, upload_type: str, division: str | None = None,
             upload_type=upload_type,
             division=division or None,
             status=status,
-            uploaded_at=datetime.now(),
+            uploaded_at=utcnow(),
         ))
         session.commit()
     finally:
@@ -42,7 +42,7 @@ def get_recent_uploads(limit: int = 10) -> list:
                 "upload_type": r.upload_type,
                 "division": r.division or "",
                 "status": r.status,
-                "uploaded_at": r.uploaded_at.strftime("%d %b %Y, %I:%M %p") if r.uploaded_at else "",
+                "uploaded_at": to_local(r.uploaded_at).strftime("%d %b %Y, %I:%M %p") if r.uploaded_at else "",
             }
             for r in rows
         ]

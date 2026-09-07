@@ -45,6 +45,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.config import REVIEW_UPLOADS_DIR
+from database.connection import utcnow
 from app.review_coverage_service import _load_visits_support, _visits_support_slot_id
 from app.review_upload_service import get_slot_state
 
@@ -276,5 +277,5 @@ def generate_rgd_summary(division: str, report_progress=None) -> dict:
     logger.info(f"RGD Visit and Support generated for {division}: {len(rows)} row(s) -> {out_path}")
     return {
         "success": True, "division": division, "file_path": str(out_path),
-        "generated_at": datetime.now(), "row_count": len(rows), "errors": [],
+        "generated_at": utcnow(), "row_count": len(rows), "errors": [],
     }

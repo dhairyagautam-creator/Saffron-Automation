@@ -74,6 +74,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.config import REVIEW_UPLOADS_DIR
+from database.connection import utcnow
 from app.hq_distribution_service import get_valid_hqs_for_division
 from app.review_upload_service import get_slot_state
 from app.review_validation import _select_sheet
@@ -478,7 +479,7 @@ def generate_coverage_summary(division: str, report_progress=None) -> dict:
     logger.info(f"Coverage Summary generated for {division}: {len(computed)} BM blocks -> {out_path}")
     return {
         "success": True, "division": division, "file_path": str(out_path),
-        "generated_at": datetime.now(), "bm_count": len(computed), "errors": [],
+        "generated_at": utcnow(), "bm_count": len(computed), "errors": [],
     }
 
 

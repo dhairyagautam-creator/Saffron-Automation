@@ -65,7 +65,7 @@ from app.manager_work_allocation_shared import (
     merge_same_month_duplicates,
     sync_rolling_window,
 )
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import (
     ManagerWorkAllocationBMDetail,
     ManagerWorkAllocationFinding,
@@ -341,7 +341,7 @@ def process_rbm_report(records: list) -> dict:
         f"{len(new_monthly_records)} record(s) after same-month-duplicate merge"
     )
 
-    now = datetime.now()
+    now = utcnow()
     session = get_config_session()
     try:
         retained_rows = sync_rolling_window(

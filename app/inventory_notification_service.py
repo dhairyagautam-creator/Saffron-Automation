@@ -76,7 +76,7 @@ from app.replenishment_service import (
 )
 from app.smtp_service import open_smtp_connection, send_via_connection
 from app.table_export_service import RowStyle, default_export_filename, write_rows_to_excel
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import InventoryEmailNotification
 
 # Same rationale as app.notification_service.COMMIT_EVERY_N_EMAILS: batched
@@ -244,7 +244,7 @@ def send_report_batch(
                         body=draft["body"],
                         row_count=0,
                         status=STATUS_SKIPPED_NO_DATA,
-                        created_at=datetime.now(),
+                        created_at=utcnow(),
                     )
                 )
             else:
@@ -277,7 +277,7 @@ def send_report_batch(
                             row_count=draft["row_count"],
                             status=STATUS_FAILED,
                             error_message=str(exc),
-                            created_at=datetime.now(),
+                            created_at=utcnow(),
                         )
                     )
                     failed_count += 1
@@ -293,8 +293,8 @@ def send_report_batch(
                             body=draft["body"],
                             row_count=draft["row_count"],
                             status=STATUS_SENT,
-                            created_at=datetime.now(),
-                            sent_at=datetime.now(),
+                            created_at=utcnow(),
+                            sent_at=utcnow(),
                         )
                     )
                     sent_count += 1

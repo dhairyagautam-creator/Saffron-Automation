@@ -35,7 +35,7 @@ from app.notification_service import preview_email_batch, send_all_emails
 from app.send_state import finish_sending, start_sending
 from app.session_state import get_active_import, set_active_import
 from app.timing import get_current_report, start_new_report
-from database.connection import get_session
+from database.connection import get_session, to_local
 from database.import_service import save_import
 from database.models import EmailNotification, ImportHistory
 from rules.hours_worked import evaluate as evaluate_hours_worked
@@ -449,7 +449,7 @@ class OperationsPage(ctk.CTkFrame):
             data = [
                 {
                     "file_name": row.file_name,
-                    "imported_at": row.imported_at.strftime("%Y-%m-%d %H:%M"),
+                    "imported_at": to_local(row.imported_at).strftime("%Y-%m-%d %H:%M"),
                     "rows_imported": f"{row.rows_imported:,}",
                     "duplicates_removed": f"{row.duplicates_removed:,}",
                 }

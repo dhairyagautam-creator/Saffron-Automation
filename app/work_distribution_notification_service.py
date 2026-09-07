@@ -115,7 +115,7 @@ from app.work_distribution_service import (
     get_current_period_label,
     get_employee_doctors,
 )
-from database.connection import get_config_session
+from database.connection import get_config_session, to_local, utcnow
 from database.models import ManagerWorkAllocationRecord, WorkDistributionDoctor, WorkDistributionEmailNotification
 
 STATUS_DRAFT = "Draft"
@@ -693,7 +693,7 @@ def send_notification_batch(drafts: list, progress_callback=None) -> dict:
                     body=draft["body"],
                     status=STATUS_FAILED,
                     error_message=str(exc),
-                    created_at=datetime.now(),
+                    created_at=utcnow(),
                 ))
                 failed_count += 1
             else:
@@ -706,8 +706,8 @@ def send_notification_batch(drafts: list, progress_callback=None) -> dict:
                     subject=draft["subject"],
                     body=draft["body"],
                     status=STATUS_SENT,
-                    created_at=datetime.now(),
-                    sent_at=datetime.now(),
+                    created_at=utcnow(),
+                    sent_at=utcnow(),
                 ))
                 sent_count += 1
 
@@ -744,7 +744,7 @@ def get_recent_notifications(limit: int = 50) -> list:
                 "employee_count": r.employee_count,
                 "subject": r.subject,
                 "status": r.status,
-                "created_at": r.created_at.strftime("%d %b %Y, %I:%M %p") if r.created_at else "",
+                "created_at": to_local(r.created_at).strftime("%d %b %Y, %I:%M %p") if r.created_at else "",
             }
             for r in rows
         ]

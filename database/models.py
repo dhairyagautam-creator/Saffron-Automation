@@ -6,11 +6,9 @@ latitude/longitude columns, and an `import_id` tag), so it is created
 dynamically by pandas (see database/import_service.py).
 """
 
-from datetime import datetime
-
 from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, String, Text, UniqueConstraint
 
-from database.connection import Base
+from database.connection import Base, utcnow
 
 
 class ImportHistory(Base):
@@ -21,7 +19,7 @@ class ImportHistory(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     file_name = Column(String, nullable=False)
-    imported_at = Column(DateTime, nullable=False, default=datetime.now)
+    imported_at = Column(DateTime, nullable=False, default=utcnow)
     rows_imported = Column(Integer, nullable=False)
     duplicates_removed = Column(Integer, nullable=False)
 
@@ -118,7 +116,7 @@ class InvestigationFinding(Base):
     hospital_lat = Column(Float, nullable=True)
     hospital_lon = Column(Float, nullable=True)
     hospital_distance_meters = Column(Integer, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     # Bumped on every notification-status change (set_notification_status()
     # in app/findings_service.py).
     updated_at = Column(DateTime, nullable=True)
@@ -211,7 +209,7 @@ class ReviewCoverageEmailNotification(Base):
     body = Column(String, nullable=False)
     status = Column(String, nullable=False, default="Draft")
     error_message = Column(String, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     sent_at = Column(DateTime, nullable=True)
 
 
@@ -228,7 +226,7 @@ class GeocodeCache(Base):
     longitude = Column(Float, nullable=False)
     address = Column(String, nullable=False)
     provider = Column(String, nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 class HospitalLookupCache(Base):
@@ -252,7 +250,7 @@ class HospitalLookupCache(Base):
     hospital_lat = Column(Float, nullable=True)
     hospital_lon = Column(Float, nullable=True)
     distance_meters = Column(Integer, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 class EmailNotification(Base):
@@ -274,7 +272,7 @@ class EmailNotification(Base):
     finding_ids = Column(String, nullable=False)
     status = Column(String, nullable=False, default="Draft")
     error_message = Column(String, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     sent_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 
@@ -322,7 +320,7 @@ class MasterEmailRecipient(Base):
     name = Column(String, nullable=False)
     email = Column(String, nullable=False)
     division = Column(String, nullable=False, default="ALL")
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
 
@@ -355,6 +353,10 @@ class AppSettings(Base):
     # succeeds; left 0 on any failure so the reset retries on the next
     # launch rather than being silently marked done when it wasn't.
     inventory_data_reset_completed = Column(Integer, nullable=False, default=0)  # 0/1
+    # One-time marker: has database.migrations.backfill_bookkeeping_timestamps_
+    # to_utc() already run? See that migration's own docstring -- once set,
+    # it must never run again, or it would re-shift already-correct UTC data.
+    timestamps_backfilled_to_utc = Column(Integer, nullable=False, default=0)  # 0/1
     updated_at = Column(DateTime, nullable=True)
 
 
@@ -441,7 +443,7 @@ class InventoryThreshold(Base):
     previous_month_sales = Column(Float, nullable=False)
     raw_threshold = Column(Float, nullable=False)
     packed_threshold = Column(Float, nullable=False)
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class PaymentInvoice(Base):
@@ -465,9 +467,25 @@ class PaymentInvoice(Base):
 
     Always stored on the config/main database (get_config_session()), same
     as Inventory Monitoring's tables -- Payment Analytics has no Developer
-    Mode concept of its own."""
+    Mode concept of its own.
+
+    UNIQUE(party_name, invoice_no, month) is retry-safety against
+    re-uploading the same file, not a business-identity claim -- invoice
+    numbering plausibly resets per financial year or per division, so a
+    tighter key (e.g. invoice_no alone) risks rejecting legitimate data
+    from a different year/division that happens to reuse a number.
+    process_monthly_report() already blocks re-accepting an active month;
+    this is a second, row-level layer. invoice_no is NOT NULL because
+    SQLite never treats two NULLs as equal in a UNIQUE constraint -- a
+    nullable column here would make the constraint silently decorative for
+    any row missing it (see app.payment_analytics_service._parse_invoice_rows,
+    which rejects a missing Invoice Number at validation time now, before
+    it ever reaches this table)."""
 
     __tablename__ = "payment_invoices"
+    __table_args__ = (
+        UniqueConstraint("party_name", "invoice_no", "month", name="uq_payment_invoices_party_invoice_month"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     month = Column(String, nullable=False)
@@ -475,12 +493,12 @@ class PaymentInvoice(Base):
     month_number = Column(Integer, nullable=True)
     party_name = Column(String, nullable=False)
     customer_type = Column(String, nullable=True)
-    invoice_no = Column(String, nullable=True)
+    invoice_no = Column(String, nullable=False)
     lr_date = Column(Date, nullable=False)
     due_date = Column(Date, nullable=True)
     clear_date = Column(Date, nullable=False)
     payment_days = Column(Integer, nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     # updated_at is set once at insert time and never bumped again --
     # these rows are immutable once stored (only created via a monthly
     # append, or wiped wholesale by a Historical Report re-run).
@@ -535,7 +553,7 @@ class PaymentActiveMonth(Base):
     year = Column(Integer, nullable=False)
     month_number = Column(Integer, nullable=False)  # 1-12
     month_label = Column(String, nullable=False)  # display text, from the uploaded file's own Month column
-    added_at = Column(DateTime, nullable=False, default=datetime.now)
+    added_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 class PaymentCustomerProfile(Base):
@@ -563,7 +581,7 @@ class PaymentCustomerProfile(Base):
     earliest_invoice = Column(Date, nullable=True)
     latest_invoice = Column(Date, nullable=True)
     risk_category = Column(String, nullable=False)
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class OutstandingInvoice(Base):
@@ -603,7 +621,7 @@ class OutstandingInvoice(Base):
     bill_amount = Column(Float, nullable=True)  # from the report's "Bill Amount" column
     month = Column(String, nullable=True)  # from the report's "Month" column -- stored for future use, not surfaced yet
     followed_up = Column(Integer, nullable=False, default=0)  # 0/1
-    uploaded_at = Column(DateTime, nullable=False, default=datetime.now)
+    uploaded_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 class InventoryReplenishment(Base):
@@ -680,7 +698,7 @@ class InventoryReplenishment(Base):
     packed_threshold = Column(Float, nullable=False)
     stock_deficit = Column(Float, nullable=False)
     status = Column(String, nullable=False)  # "Replenishment Required" | "Healthy"
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class CwhStock(Base):
@@ -761,7 +779,7 @@ class CwhStock(Base):
     cwh_threshold = Column(Float, nullable=False, default=0.0)
     surplus_deficit = Column(Float, nullable=False, default=0.0)
     status = Column(String, nullable=False, default="Healthy")  # "Healthy" | "Shortage"
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class InventoryEmailRecipient(Base):
@@ -797,7 +815,7 @@ class InventoryEmailRecipient(Base):
     name = Column(String, nullable=False)
     email = Column(String, nullable=False)
     divisions = Column(String, nullable=False, default="")
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
 
@@ -865,7 +883,7 @@ class WorkDistributionDoctor(Base):
     bm_visit_count = Column(Integer, nullable=False, default=0)
     abm_visit_count = Column(Integer, nullable=False, default=0)
     period_label = Column(String, nullable=True)
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class WorkDistributionFinding(Base):
@@ -914,7 +932,7 @@ class WorkDistributionFinding(Base):
     poor_coverage_doctors = Column(Integer, nullable=False, default=0)
     status = Column(String, nullable=False, default="Healthy")
     reason = Column(String, nullable=True)
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class ManagerWorkAllocationParameter(Base):
@@ -996,6 +1014,12 @@ class ManagerWorkAllocationRecord(Base):
     Manager Work Allocation has no Developer Mode concept of its own."""
 
     __tablename__ = "manager_work_allocation_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_engine", "emp_code", "team_emp_code", "month",
+            name="uq_manager_work_allocation_records_pair_month",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     division = Column(String, nullable=True)
@@ -1021,7 +1045,7 @@ class ManagerWorkAllocationRecord(Base):
     general_covered = Column(String, nullable=True)
     b_rgd_covered = Column(String, nullable=True)
     source_engine = Column(String, nullable=True)
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class ManagerWorkAllocationFinding(Base):
@@ -1083,7 +1107,7 @@ class ManagerWorkAllocationFinding(Base):
     coverage_percent = Column(Float, nullable=True)
     reason = Column(String, nullable=True)
     status = Column(String, nullable=False, default="Pass")
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class ManagerWorkAllocationBMDetail(Base):
@@ -1139,7 +1163,7 @@ class ManagerWorkAllocationBMDetail(Base):
     required_days = Column(Float, nullable=False, default=0.0)
     status = Column(String, nullable=False, default="Pass")
     reason = Column(String, nullable=True)
-    last_updated = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=utcnow)
 
 
 class InventoryEmailNotification(Base):
@@ -1180,7 +1204,7 @@ class InventoryEmailNotification(Base):
     row_count = Column(Integer, nullable=False, default=0)
     status = Column(String, nullable=False, default="Draft")
     error_message = Column(String, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     sent_at = Column(DateTime, nullable=True)
 
 
@@ -1224,7 +1248,7 @@ class WorkDistributionEmailNotification(Base):
     body = Column(String, nullable=False)
     status = Column(String, nullable=False, default="Draft")
     error_message = Column(String, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     sent_at = Column(DateTime, nullable=True)
 
 
@@ -1258,4 +1282,4 @@ class WorkDistributionUploadLog(Base):
     upload_type = Column(String, nullable=False)
     division = Column(String, nullable=True)
     status = Column(String, nullable=False, default="Uploaded")
-    uploaded_at = Column(DateTime, nullable=False, default=datetime.now)
+    uploaded_at = Column(DateTime, nullable=False, default=utcnow)

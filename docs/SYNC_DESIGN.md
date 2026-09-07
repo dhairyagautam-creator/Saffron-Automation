@@ -84,6 +84,29 @@ their own docstrings in `database/models.py`):
 - `PaymentAnalyticsParameter` (`:539`) — Payments
 - `WorkDistributionParameter` (`:853`) — Work Distribution
 - `ManagerWorkAllocationParameter` (`:969`) — Manager Work Allocation
+- `AppSettings` (`database/models.py:330`) — shared config (Gmail credentials,
+  master email address, Geoapify key)
+
+**Never-synced field allowlist — `AppSettings` only.** Two fields on this table
+are install-local and must be excluded from whatever sync/pull mechanism this
+table gets, never included as a synced column and never read from the cloud row:
+
+- `inventory_data_reset_completed` — a one-time, per-installation marker (see
+  `app/inventory_factory_reset.py`). Syncing it would either re-fire the
+  Inventory wipe on every machine the moment one machine completes it (if
+  synced as "pull cloud value"), or permanently suppress it everywhere once
+  any one machine sets it (if synced as "push local value, last-write-wins").
+  Either direction is wrong; the flag only makes sense per-machine.
+- `setup_completed` — whether *this installation's* first-run Setup Wizard has
+  run. A brand-new machine must still see its own wizard regardless of what
+  every other machine has already done.
+
+Both are exactly like `dev_password_hash`/`dev_password_salt` were before
+Developer Mode's removal: global-row bookkeeping about the machine itself, not
+shared configuration. If `AppSettings` sync is implemented as "pull the whole
+row," these two columns must be excluded from the pulled set (keep whatever
+the local row already has); if implemented as versioned per-field writes, they
+simply never get a version column or a write path to the cloud at all.
 
 **Mechanism: optimistic concurrency, not last-write-wins.**
 

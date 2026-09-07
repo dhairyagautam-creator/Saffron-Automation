@@ -524,6 +524,85 @@ def ensure_payment_invoices_updated_at_column() -> None:
     )
 
 
+def ensure_payment_invoices_invoice_no_not_null_and_unique_index() -> None:
+    """Make invoice_no NOT NULL and add UNIQUE(party_name, invoice_no, month)
+    -- retry-safety against re-uploading the same file (see PaymentInvoice's
+    own docstring for why this key, not invoice_no alone or a tighter one).
+
+    invoice_no must be NOT NULL before the unique index means anything:
+    SQLite never treats two NULLs as equal in a UNIQUE constraint, so a row
+    with a NULL invoice_no would sail through the constraint undetected.
+    app.payment_analytics_service._parse_invoice_rows now rejects a missing
+    Invoice Number at validation time, but that only stops NEW rows -- this
+    migration must also confirm no EXISTING row already has a NULL before
+    it can safely enforce NOT NULL. If one exists, this refuses to guess
+    what to do with it (drop it? blank it in?) and leaves the column
+    nullable and the index un-added, logging loudly instead -- a decorative
+    constraint is a known, visible gap; guessing at real financial data is
+    not this migration's call to make.
+
+    SQLite has no ALTER TABLE to change a column's nullability in place, so
+    (like drop_developer_mode_schema() above) the table is rebuilt: rename,
+    recreate from the model's current shape, copy, drop -- with the same
+    resume-from-interrupted safety, since pysqlite autocommits DDL and a
+    DROP TABLE is irreversible the instant it runs even if a later step in
+    the same transaction fails."""
+    from database.models import PaymentInvoice
+
+    table = PAYMENT_INVOICES_TABLE
+    old_table = f"{table}_pre_notnull_migration"
+    engine = get_config_engine()
+
+    resuming = inspect(engine).has_table(old_table)
+    if not resuming:
+        if not inspect(engine).has_table(table):
+            return
+        # invoice_no's nullability and the unique constraint are always
+        # applied together in the one rebuild below -- nothing else in this
+        # codebase ever changes this column's nullability -- so checking
+        # nullability alone is sufficient (and more reliable than looking
+        # for the constraint as a named index: SQLite stores a UNIQUE
+        # table constraint as an unnamed sqlite_autoindex_*, not under the
+        # name given in __table_args__, even though that name IS preserved
+        # in the table's own CREATE TABLE text).
+        already_not_null = any(
+            col["name"] == "invoice_no" and col["nullable"] is False
+            for col in inspect(engine).get_columns(table)
+        )
+        if already_not_null:
+            return
+
+    source_table = old_table if resuming else table
+    with engine.connect() as conn:
+        null_count = conn.execute(
+            text(f"SELECT COUNT(*) FROM {source_table} WHERE invoice_no IS NULL")
+        ).scalar()
+    if null_count:
+        logger.error(
+            f"Migration SKIPPED: {null_count} row(s) in '{source_table}' have a NULL invoice_no. "
+            "Refusing to guess (drop vs. backfill) -- invoice_no stays nullable and the "
+            "UNIQUE(party_name, invoice_no, month) index is NOT added until this is resolved by hand."
+        )
+        return
+
+    keep = [c.name for c in PaymentInvoice.__table__.columns]
+    with engine.begin() as conn:
+        if not resuming:
+            conn.execute(text(f"ALTER TABLE {table} RENAME TO {old_table}"))
+        else:
+            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))  # discard any partial rebuild
+        PaymentInvoice.__table__.create(bind=conn)
+        conn.execute(
+            text(f"INSERT INTO {table} ({', '.join(keep)}) SELECT {', '.join(keep)} FROM {old_table}")
+        )
+        copied = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
+        conn.execute(text(f"DROP TABLE {old_table}"))
+    logger.info(
+        f"Migration: '{table}' rebuilt with invoice_no NOT NULL and "
+        f"UNIQUE(party_name, invoice_no, month) ({copied} row(s) preserved)"
+    )
+
+
 def ensure_cwh_stock_threshold_columns() -> None:
     """Add total_previous_month_sales/cwh_threshold/surplus_deficit/status
     to cwh_stock (see database/models.py's CwhStock docstring and
@@ -699,6 +778,32 @@ def ensure_manager_work_allocation_records_month_sort_key_column() -> None:
     )
 
 
+def ensure_manager_work_allocation_records_pair_month_unique_index() -> None:
+    """Add the UNIQUE(source_engine, emp_code, team_emp_code, month) index
+    to manager_work_allocation_records if it predates this fix -- see
+    ManagerWorkAllocationRecord's own docstring: this IS the table's
+    documented identity already (one row per pair per month), enforced
+    only in application logic (app.manager_work_allocation_shared.
+    sync_rolling_window's upsert) until now, never at the database level.
+    SQLite has no ALTER TABLE ADD CONSTRAINT; a UNIQUE index enforces the
+    identical guarantee without a table rebuild."""
+    table = "manager_work_allocation_records"
+    index_name = "uq_manager_work_allocation_records_pair_month"
+    if not inspect(get_config_engine()).has_table(table):
+        return
+    existing_indexes = {ix["name"] for ix in inspect(get_config_engine()).get_indexes(table)}
+    if index_name in existing_indexes:
+        return
+    with get_config_engine().begin() as conn:
+        conn.execute(
+            text(
+                f"CREATE UNIQUE INDEX {index_name} ON {table} "
+                "(source_engine, emp_code, team_emp_code, month)"
+            )
+        )
+    logger.info(f"Migration: added UNIQUE(source_engine, emp_code, team_emp_code, month) index to '{table}'")
+
+
 def ensure_work_distribution_doctors_bm_abm_code_columns() -> None:
     """Add bm_code/abm_code to work_distribution_doctors if they predate
     the 2026-08 BM/ABM Code fix (see WorkDistributionDoctor's own
@@ -741,6 +846,153 @@ def ensure_work_distribution_findings_employee_code_column() -> None:
     logger.info(f"Migration: added employee_code column to '{table}'")
 
 
+# Every bookkeeping DateTime column in the schema, by table -- see
+# backfill_bookkeeping_timestamps_to_utc()'s own docstring. Kept as one
+# explicit map (not derived from the model classes at runtime) so this
+# migration's behavior is pinned to what existed when it was written, not
+# whatever the model happens to look like on some future run.
+_TIMESTAMP_BACKFILL_COLUMNS: dict[str, list[str]] = {
+    "import_history": ["imported_at"],
+    "active_session": ["activated_at"],
+    "investigation_findings": ["created_at", "updated_at"],
+    "workbook_connections": ["updated_at"],
+    "review_file_slots": ["uploaded_at"],
+    "review_coverage_email_notifications": ["created_at", "sent_at"],
+    "geocode_cache": ["created_at"],
+    "hospital_lookup_cache": ["created_at"],
+    "email_notifications": ["created_at", "sent_at", "updated_at"],
+    "master_email_recipients": ["created_at", "updated_at"],
+    "app_settings": ["updated_at"],
+    "inventory_thresholds": ["last_updated"],
+    "payment_invoices": ["created_at", "updated_at"],
+    "payment_active_months": ["added_at"],
+    "payment_customer_profiles": ["last_updated"],
+    "outstanding_invoices": ["uploaded_at"],
+    "inventory_replenishment": ["last_updated"],
+    "cwh_stock": ["last_updated"],
+    "inventory_email_recipients": ["created_at", "updated_at"],
+    "work_distribution_doctors": ["last_updated"],
+    "work_distribution_findings": ["last_updated"],
+    "manager_work_allocation_records": ["last_updated"],
+    "manager_work_allocation_findings": ["last_updated"],
+    "manager_work_allocation_bm_details": ["last_updated"],
+    "inventory_email_notifications": ["created_at", "sent_at"],
+    "work_distribution_email_notifications": ["created_at", "sent_at"],
+    "work_distribution_upload_log": ["uploaded_at"],
+}
+
+
+def backfill_bookkeeping_timestamps_to_utc() -> None:
+    """One-time backfill: every EXISTING value in the 36 bookkeeping
+    timestamp columns above (27 tables) was written by datetime.now() --
+    this machine's local wall-clock time. Every one of this codebase's
+    write sites has just been switched to database.connection.utcnow()
+    instead (see that function's own docstring), so from here on every NEW
+    row in these columns is UTC. Without this backfill, the column would
+    silently hold two different clocks depending on which row was written
+    before vs. after that switch -- exactly the Milestone 53 failure class
+    (V2_MIGRATION_LOG.md:1483-1496): one column, two clocks, comparisons
+    (ordering, "most recent", replay) silently wrong for whichever rows
+    happen to be on the "other" clock.
+
+    *** -5:30 IS SPECIFIC TO THIS DATABASE. IT IS NOT A REUSABLE HELPER. ***
+    It is correct here ONLY because every existing row was written by a
+    machine running India Standard Time with no DST (confirmed against
+    this deployment's own OS: time.tzname() -> India Standard Time, fixed
+    UTC+5:30 year-round). A different installation, or this same one on a
+    machine in a different timezone, must NOT run this function expecting
+    it to do the right thing -- it would apply the wrong shift to rows
+    that were never IST to begin with. This is exactly why it is
+    marker-guarded (timestamps_backfilled_to_utc on app_settings) and
+    written to never run a second time on the same database, not written
+    as a general "local-to-UTC" utility anyone could call again later.
+
+    SEQUENCING -- two phases, not one transaction, because pysqlite
+    auto-commits before DDL (see drop_developer_mode_schema()'s own
+    docstring above -- that migration hit this for real: a DROP TABLE
+    inside an engine.begin() block was NOT rolled back when a later
+    statement in the same block failed). Mixing the marker column's ADD
+    COLUMN into the same transaction as the data UPDATEs below would
+    reopen that exact hazard.
+      Phase 1 (schema only, idempotent, safe to repeat, no data touched):
+        ensure the marker column exists.
+      Phase 2 (pure DML, genuinely one atomic transaction -- no DDL
+        statement appears in it, so pysqlite's autocommit-before-DDL
+        quirk does not apply): if the marker isn't already set, shift
+        every column in every table above AND set the marker, together.
+        A crash or error anywhere in this phase rolls back the entire
+        phase -- either every column shifts and the marker ends up set,
+        or nothing does. There is no partial-shift state this phase can
+        leave behind.
+
+    NULLs: 13 of these 36 columns are nullable. strftime() returns NULL
+    when given a NULL argument (verified directly against sqlite3 before
+    writing this), so `SET col = strftime(...)` needs no per-column WHERE
+    guard -- a NULL row's column stays NULL, never becomes today's date or
+    an error.
+
+    Precision: strftime('%Y-%m-%d %H:%M:%f', ...) preserves millisecond
+    precision through the shift -- SQLite's own ceiling; it cannot carry
+    the full microsecond precision Python's datetime.now() produces, and
+    no code in this app compares these timestamps at sub-second
+    granularity (confirmed: nothing anywhere compares a stored bookkeeping
+    timestamp against a live datetime.now() -- every use is display or
+    ordering, both fine with millisecond resolution)."""
+    engine = get_config_engine()
+    if not inspect(engine).has_table(APP_SETTINGS_TABLE):
+        return
+
+    # --- Phase 1: schema only -----------------------------------------
+    if "timestamps_backfilled_to_utc" not in _existing_columns(APP_SETTINGS_TABLE):
+        with engine.begin() as conn:
+            conn.execute(
+                text(f"ALTER TABLE {APP_SETTINGS_TABLE} ADD COLUMN timestamps_backfilled_to_utc INTEGER NOT NULL DEFAULT 0")
+            )
+
+    with engine.connect() as conn:
+        already_done = conn.execute(
+            text(f"SELECT timestamps_backfilled_to_utc FROM {APP_SETTINGS_TABLE} LIMIT 1")
+        ).scalar()
+    if already_done:
+        return
+
+    # --- Phase 2: the shift, pure DML, one transaction -----------------
+    shifted: dict[str, int] = {}
+    with engine.begin() as conn:
+        for table, columns in _TIMESTAMP_BACKFILL_COLUMNS.items():
+            if not inspect(engine).has_table(table):
+                continue
+            cols_here = [c for c in columns if c in _existing_columns(table)]
+            if not cols_here:
+                continue
+            set_clause = ", ".join(
+                f"{c} = strftime('%Y-%m-%d %H:%M:%f', {c}, '-5 hours', '-30 minutes')" for c in cols_here
+            )
+            result = conn.execute(text(f"UPDATE {table} SET {set_clause}"))
+            shifted[table] = result.rowcount
+
+        settings_row_count = conn.execute(text(f"SELECT COUNT(*) FROM {APP_SETTINGS_TABLE}")).scalar()
+        if settings_row_count:
+            conn.execute(text(f"UPDATE {APP_SETTINGS_TABLE} SET timestamps_backfilled_to_utc = 1"))
+        else:
+            # No row yet (never-configured install) -- every NOT NULL
+            # column needs its real default spelled out explicitly here;
+            # a raw SQL INSERT does not apply the model's Python-side
+            # defaults the way going through the ORM would.
+            conn.execute(
+                text(
+                    f"INSERT INTO {APP_SETTINGS_TABLE} "
+                    "(automatic_email_enabled, setup_completed, inventory_data_reset_completed, "
+                    "timestamps_backfilled_to_utc) VALUES (0, 0, 0, 1)"
+                )
+            )
+
+    logger.info(
+        "Migration: backfilled bookkeeping timestamps from IST to UTC across "
+        f"{len(shifted)} table(s), {sum(shifted.values())} total row(s) touched: {shifted}"
+    )
+
+
 def run_startup_migrations() -> None:
     """Run all migrations, in order. Call once at application startup."""
     ensure_raw_visits_import_id_column()
@@ -765,12 +1017,15 @@ def run_startup_migrations() -> None:
     ensure_email_notifications_updated_at_column()
     ensure_workbook_connections_updated_at_column()
     ensure_payment_invoices_updated_at_column()
+    ensure_payment_invoices_invoice_no_not_null_and_unique_index()
     ensure_cwh_stock_threshold_columns()
     ensure_manager_work_allocation_records_optional_columns()
     ensure_manager_work_allocation_records_source_engine_column()
     ensure_manager_work_allocation_findings_rbm_columns()
     ensure_manager_work_allocation_bm_details_reason_column()
     ensure_manager_work_allocation_records_month_sort_key_column()
+    ensure_manager_work_allocation_records_pair_month_unique_index()
     ensure_work_distribution_doctors_bm_abm_code_columns()
     ensure_work_distribution_findings_employee_code_column()
     ensure_app_settings_inventory_reset_column()
+    backfill_bookkeeping_timestamps_to_utc()

@@ -8,7 +8,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from database.connection import get_session
+from database.connection import get_session, utcnow
 from database.models import WorkbookConnection
 
 WORKBOOK_NAMES = ("Onyx", "Guardians", "Xandra")
@@ -52,7 +52,7 @@ def set_connection(workbook_name: str, file_path: str) -> None:
         else:
             row = WorkbookConnection(workbook_name=workbook_name, file_path=file_path)
             session.add(row)
-        row.updated_at = datetime.now()
+        row.updated_at = utcnow()
         session.commit()
     finally:
         session.close()

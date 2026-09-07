@@ -53,7 +53,7 @@ import pandas as pd
 from loguru import logger
 
 from app.payment_parameters_service import get_collections_ageing_thresholds
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import OutstandingInvoice
 
 STATUS_NOT_YET_DUE = "Not Yet Due"
@@ -227,7 +227,7 @@ def process_outstanding_report(df: pd.DataFrame) -> dict:
             f"(Party Name={err['party_name']!r}, Bill No.={err['invoice_no']!r}) -- {err['reason']}"
         )
 
-    now = datetime.now()
+    now = utcnow()
     session = get_config_session()
     try:
         session.query(OutstandingInvoice).delete()
@@ -310,7 +310,7 @@ def set_follow_up(invoice_id: int, followed_up: bool) -> None:
         invoice = session.get(OutstandingInvoice, invoice_id)
         if invoice is not None:
             invoice.followed_up = 1 if followed_up else 0
-            invoice.updated_at = datetime.now()
+            invoice.updated_at = utcnow()
             session.commit()
     finally:
         session.close()

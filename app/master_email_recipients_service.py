@@ -21,7 +21,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import MasterEmailRecipient
 
 # "ALL" is a sentinel meaning "every division, no filter" -- not a real
@@ -83,7 +83,7 @@ def get_all_recipients() -> list[dict]:
 def create_recipient(name: str, email: str, division: str) -> dict:
     """Adds a new recipient. Returns the created row as a dict (see
     _row_to_dict) so the caller has the generated id immediately."""
-    now = datetime.now()
+    now = utcnow()
     session = get_config_session()
     try:
         row = MasterEmailRecipient(
@@ -116,7 +116,7 @@ def update_recipient(recipient_id: int, name: str, email: str, division: str) ->
         row.name = name.strip()
         row.email = email.strip()
         row.division = division
-        row.updated_at = datetime.now()
+        row.updated_at = utcnow()
         session.commit()
     finally:
         session.close()

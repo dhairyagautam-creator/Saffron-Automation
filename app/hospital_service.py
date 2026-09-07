@@ -51,7 +51,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.geo_utils import haversine_km
 from app.geoapify_settings_service import get_geoapify_api_key
-from database.connection import get_session
+from database.connection import get_session, utcnow
 from database.models import HospitalLookupCache
 
 GEOAPIFY_URL = "https://api.geoapify.com/v2/places"
@@ -180,7 +180,7 @@ def _store_cached(lat: float, lon: float, result: dict) -> None:
                 hospital_lat=result["lat"],
                 hospital_lon=result["lon"],
                 distance_meters=result["distance_meters"],
-                created_at=datetime.now(),
+                created_at=utcnow(),
             )
         )
         session.commit()

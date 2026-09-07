@@ -19,6 +19,7 @@ from app.master_attention_service import (
     get_current_attention_records,
 )
 from app.session_state import get_active_import
+from database.connection import to_local
 from ui.components import (
     Card,
     EmptyState,
@@ -252,7 +253,7 @@ class MasterPage(ctk.CTkFrame):
             self.upload_label.configure(text="")
         elif upload is not None and upload.imported_at is not None:
             self.upload_label.configure(
-                text=f"Latest processed upload: {upload.imported_at.strftime('%d %b %Y, %I:%M %p')}"
+                text=f"Latest processed upload: {to_local(upload.imported_at).strftime('%d %b %Y, %I:%M %p')}"
             )
         else:
             self.upload_label.configure(text="No upload processed yet")

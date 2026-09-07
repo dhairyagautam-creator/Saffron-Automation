@@ -43,7 +43,7 @@ from loguru import logger
 
 from app.inventory_parameters_service import get_cwh_threshold_multiplier
 from app.threshold_service import is_ahmedabad_cwh_branch, normalize_match_key
-from database.connection import get_config_session
+from database.connection import get_config_session, utcnow
 from database.models import CwhStock, InventoryThreshold
 
 STATUS_HEALTHY = "Healthy"
@@ -160,7 +160,7 @@ def evaluate_cwh_stock(df: pd.DataFrame) -> dict:
             logger.info(f"Cleared {deleted} existing CWH stock row(s) before rebuilding from this upload")
 
         created = 0
-        now = datetime.now()
+        now = utcnow()
 
         for item_key in all_item_keys:
             new_stock = stock_by_item.get(item_key)

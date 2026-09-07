@@ -28,7 +28,7 @@ from app.findings_service import get_notification_status_counts
 from app.send_state import get_progress, is_sending
 from app.session_state import get_active_import_id
 from app.table_export_service import default_export_filename, export_rows_with_ui
-from database.connection import get_session
+from database.connection import get_session, to_local
 from database.models import EmailNotification
 from ui.components import Card, EmptyState, KPICard, PrimaryButton, SectionHeader, styled_treeview
 from ui.icons import get_icon
@@ -306,7 +306,7 @@ class EmailCenterPage(ctk.CTkFrame):
         tree = styled_treeview(self.log_container, LOG_COLUMNS, LOG_HEADINGS, LOG_WIDTHS, height=14)
         for row in rows:
             employee_count = len(row.finding_ids.split(",")) if row.finding_ids else 0
-            sent_at_text = row.sent_at.strftime("%Y-%m-%d %H:%M") if row.sent_at else "-"
+            sent_at_text = to_local(row.sent_at).strftime("%Y-%m-%d %H:%M") if row.sent_at else "-"
             # Same dict both feeds the Treeview's own `values=` tuple and the
             # exported row (Milestone 55) -- one source of truth, never two
             # separately-maintained value lists.

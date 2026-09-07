@@ -15,6 +15,26 @@ only when you need the full story behind one specific change.
 > writing into `V2_MIGRATION_LOG.md` or start a `V2_MIGRATION_LOG_2.md` — just note here which one is
 > current so a future session doesn't read a stale file as the latest.
 
+## 2026-09-07 — Developer Mode removal, findings marking removal, sync-prep
+
+- Removed Developer Mode entirely (the password-gated experimental environment,
+  its separate data file, and Publish-to-User-Mode) and the investigation
+  findings review-status marking system (Open/Reviewed/Ignored) -- findings are
+  now purely derived from the rule engine, gated only by automatic
+  `notification_status`.
+- **Product decision needed before the next release ships**: the one-time
+  company-wide Inventory data factory reset (`app/inventory_factory_reset.py`,
+  shipped in the Review System / Inventory factory reset release) has never
+  actually fired on a real installation -- it was gated behind `sys.frozen`
+  this session specifically so dev/source launches stop consuming it. That
+  means it is still fully armed: **the first launch of the next packaged
+  build will wipe `inventory_thresholds`/`inventory_replenishment`/`cwh_stock`
+  on every installed machine**, with no source files retained to rebuild from
+  yet. Confirm this is still the intended behavior before that build ships.
+- Added WAL mode, `payment_invoices`/`manager_work_allocation_records` unique
+  constraints, and began a UTC migration for bookkeeping timestamps -- see
+  `docs/SYNC_DESIGN.md` for the sync-prep context this all serves.
+
 ## 2026-08-05 — Folder cleanup + documentation
 
 - Renamed the working project from `2.0 dev` to `Saffron Automation v2.1 - Development` — the old name
