@@ -1,7 +1,7 @@
 """The Review System module: branded sidebar navigation plus page content,
 mirroring ui/work_distribution_module.py's shell shape. Structural scaffold
-only -- no ModuleRefreshControl (no cloud sync exists yet for this module),
-and the four pages are placeholders (see each page's own docstring).
+only -- no cloud sync layer exists in this app, and the four pages are
+placeholders (see each page's own docstring).
 """
 
 import customtkinter as ctk

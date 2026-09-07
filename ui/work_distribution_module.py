@@ -1,6 +1,6 @@
 """The Work Distribution module: branded sidebar navigation plus page
 content, mirroring ui/inventory_module.py's shell shape. UI-only for now --
-no ModuleRefreshControl (no cloud sync exists yet for this module).
+no cloud sync layer exists in this app.
 """
 
 import customtkinter as ctk
