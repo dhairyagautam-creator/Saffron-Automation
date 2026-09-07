@@ -432,8 +432,8 @@ def drop_obsolete_employee_emails_table() -> None:
 def ensure_investigation_findings_updated_at_column() -> None:
     """Add updated_at to investigation_findings if it predates this fix,
     backfilled from each row's own created_at so pre-existing findings get
-    a sane initial value rather than NULL. Bumped on every reviewer status
-    change (app/findings_service.py's set_status()/set_notification_status())."""
+    a sane initial value rather than NULL. Bumped on every notification-status
+    change (app/findings_service.py's set_notification_status())."""
     if not inspect(get_config_engine()).has_table(INVESTIGATION_FINDINGS_TABLE):
         return
     existing = _existing_columns(INVESTIGATION_FINDINGS_TABLE)
@@ -466,6 +466,21 @@ def ensure_email_notifications_updated_at_column() -> None:
     logger.info(
         f"Migration: added updated_at column to '{EMAIL_NOTIFICATIONS_TABLE}' (backfilled from created_at)"
     )
+
+
+def drop_investigation_findings_status_column() -> None:
+    """Drop the human-writable review `status` (Open/Reviewed/Ignored)
+    column -- the marking system is removed; a finding's only outcome now is
+    its automatic `notification_status`. No UNIQUE constraint touches this
+    column, so a plain DROP COLUMN (supported since SQLite 3.35) is safe,
+    unlike the rename-dance drop_developer_mode_schema() needed above."""
+    if not inspect(get_config_engine()).has_table(INVESTIGATION_FINDINGS_TABLE):
+        return
+    if "status" not in _existing_columns(INVESTIGATION_FINDINGS_TABLE):
+        return
+    with get_config_engine().begin() as conn:
+        conn.execute(text(f"ALTER TABLE {INVESTIGATION_FINDINGS_TABLE} DROP COLUMN status"))
+    logger.info(f"Migration: dropped 'status' column from '{INVESTIGATION_FINDINGS_TABLE}' (review marking removed)")
 
 
 def ensure_workbook_connections_updated_at_column() -> None:
@@ -746,6 +761,7 @@ def run_startup_migrations() -> None:
     ensure_investigation_findings_division_column()
     ensure_inventory_new_sales_format_schema()
     ensure_investigation_findings_updated_at_column()
+    drop_investigation_findings_status_column()
     ensure_email_notifications_updated_at_column()
     ensure_workbook_connections_updated_at_column()
     ensure_payment_invoices_updated_at_column()

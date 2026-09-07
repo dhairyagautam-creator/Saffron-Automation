@@ -6,31 +6,29 @@ Version 2.2: this single page now serves BOTH finding families via a TabBar
 any location rule), UNCHANGED except that it no longer shows HR findings;
 "HR-Based Findings" is the Low Working Hours table over the HOURS_WORKED
 rule's findings (rules/hours_worked.py), with room for a future Low Call
-Count table beside it. Both tables share the one detail/review panel on the
-right (a finding is a finding -- same finding_id, same status workflow), so
-selecting a row in either tab reviews it through the same buttons.
+Count table beside it. Both tables share the one detail panel on the right
+(a finding is a finding -- same finding_id), so selecting a row in either
+tab shows the same detail.
 """
 
 import customtkinter as ctk
 from loguru import logger
 
-from app.findings_service import get_all_findings, parse_hours_worked_message, set_status
+from app.findings_service import get_all_findings, parse_hours_worked_message
 from app.suppression_service import region_suppressed_finding_ids, suppressed_finding_ids_for_import
 from app.session_state import get_active_import_id
 from app.table_export_service import RowStyle, default_export_filename, export_rows_with_ui
-from ui.components import Card, EmptyState, PrimaryButton, SecondaryButton, SectionHeader, StatusBadge, TabBar, styled_treeview
+from ui.components import Card, EmptyState, PrimaryButton, SectionHeader, StatusBadge, TabBar, styled_treeview
 from ui.icons import get_icon
 from ui.theme import Color, Font, Spacing
-
-STATUS_BADGE_KIND = {"Open": "warning", "Reviewed": "success", "Ignored": "neutral"}
 
 # Rules shown on the HR-Based Findings tab; everything else is Location-Based.
 # Leave room here for a future "LOW_CALL_COUNT" without touching anything else.
 HR_RULE_NAMES = {"HOURS_WORKED"}
 
-# Notification outcome is a separate concept from the review `status` above
-# (Open/Reviewed/Ignored) — this is what happened to the automatic email for
-# this finding (see app/notification_service.py + app/hospital_service.py).
+# What happened to the automatic email for this finding (see
+# app/notification_service.py + app/hospital_service.py). The only outcome a
+# finding has -- there is no separate human-writable review status.
 NOTIFICATION_STATUS_DISPLAY = {
     None: "Pending",
     "Sent": "Email Sent",
@@ -50,7 +48,7 @@ NOTIFICATION_BADGE_KIND = {
     "Failed": "error",
 }
 
-COLUMNS = ("employee_name", "employee_code", "division", "visit_date", "rule_name", "notification_status", "status", "message")
+COLUMNS = ("employee_name", "employee_code", "division", "visit_date", "rule_name", "notification_status", "message")
 HEADINGS = {
     "employee_name": "Employee",
     "employee_code": "Code",
@@ -58,7 +56,6 @@ HEADINGS = {
     "visit_date": "Date",
     "rule_name": "Rule",
     "notification_status": "Status",
-    "status": "Review Status",
     "message": "Message",
 }
 WIDTHS = {
@@ -68,7 +65,6 @@ WIDTHS = {
     "visit_date": 90,
     "rule_name": 120,
     "notification_status": 130,
-    "status": 100,
     "message": 300,
 }
 
@@ -147,16 +143,6 @@ def status_text_for_display(finding, region_suppressed_ids) -> str:
     return _notification_status_display(finding)
 
 
-def hr_status_text(finding, region_suppressed_ids) -> str:
-    """The HR-Based Status column value: 'Suppressed - Region Rule' for a
-    region-suppressed finding (canonical live rule -- the same determination
-    the Location tab, Master, and email use), otherwise the review status.
-    Pure (region-suppressed id set passed in) so it's testable without Tk."""
-    if finding.finding_id in region_suppressed_ids:
-        return "Suppressed - Region Rule"
-    return finding.status
-
-
 def findings_signature(findings) -> tuple:
     """A lightweight fingerprint of everything the Findings page renders per
     finding -- id plus the fields that drive the row/status/tint/exclusion.
@@ -169,7 +155,6 @@ def findings_signature(findings) -> tuple:
             f.finding_id,
             f.notification_status,
             f.suppression_reason,
-            f.status,
             f.employee_name,
             f.message,
         )
@@ -190,10 +175,8 @@ class FindingsPage(ctk.CTkFrame):
         self._current_display_rows: list[dict] = []
         self._sort_column = "visit_date"
         self._sort_reverse = True
-        self._status_filter = "All"
 
         # HR-Based tab state
-        self._hr_status_filter = "All"
         self._hr_display_rows: list[dict] = []
 
         self._build_widgets()
@@ -251,21 +234,6 @@ class FindingsPage(ctk.CTkFrame):
         filter_row = ctk.CTkFrame(table_body, fg_color="transparent")
         filter_row.pack(fill="x", pady=(0, Spacing.SM))
 
-        ctk.CTkLabel(filter_row, text="Filter:", font=Font.BODY, text_color=Color.TEXT_SECONDARY).pack(
-            side="left", padx=(0, Spacing.SM)
-        )
-        self.status_menu = ctk.CTkOptionMenu(
-            filter_row,
-            values=["All", "Open", "Reviewed", "Ignored"],
-            command=self._on_status_filter_changed,
-            fg_color=Color.SURFACE,
-            button_color=Color.PRIMARY,
-            button_hover_color=Color.PRIMARY_HOVER,
-            text_color=Color.TEXT_PRIMARY,
-            width=130,
-        )
-        self.status_menu.pack(side="left", padx=(0, Spacing.MD))
-
         self.search_entry = ctk.CTkEntry(filter_row, placeholder_text="Search employee, code, or message…")
         self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, Spacing.SM))
         self.search_entry.bind("<KeyRelease>", lambda event: self._render_table())
@@ -295,21 +263,6 @@ class FindingsPage(ctk.CTkFrame):
         filter_row = ctk.CTkFrame(table_body, fg_color="transparent")
         filter_row.pack(fill="x", pady=(0, Spacing.SM))
 
-        ctk.CTkLabel(filter_row, text="Filter:", font=Font.BODY, text_color=Color.TEXT_SECONDARY).pack(
-            side="left", padx=(0, Spacing.SM)
-        )
-        self.hr_status_menu = ctk.CTkOptionMenu(
-            filter_row,
-            values=["All", "Open", "Reviewed", "Ignored"],
-            command=self._on_hr_status_filter_changed,
-            fg_color=Color.SURFACE,
-            button_color=Color.PRIMARY,
-            button_hover_color=Color.PRIMARY_HOVER,
-            text_color=Color.TEXT_PRIMARY,
-            width=130,
-        )
-        self.hr_status_menu.pack(side="left", padx=(0, Spacing.MD))
-
         self.hr_search_entry = ctk.CTkEntry(filter_row, placeholder_text="Search employee or code…")
         self.hr_search_entry.pack(side="left", fill="x", expand=True, padx=(0, Spacing.SM))
         self.hr_search_entry.bind("<KeyRelease>", lambda event: self._render_hr_table())
@@ -337,7 +290,7 @@ class FindingsPage(ctk.CTkFrame):
         """Called every time this page becomes visible — reload from the DB."""
         self._load_findings()
 
-    def _load_findings(self, force: bool = False) -> None:
+    def _load_findings(self) -> None:
         import_id = get_active_import_id()
         findings = get_all_findings(import_id)
 
@@ -346,10 +299,9 @@ class FindingsPage(ctk.CTkFrame):
         # would reset the user's scroll, selection, and the suppression detail
         # they're viewing, making a correctly-displayed "Suppressed - Region
         # Rule" appear to flicker/reset. Rebuild only when something the page
-        # actually renders has changed (or on an explicit force, e.g. after a
-        # reviewer status click).
+        # actually renders has changed.
         signature = findings_signature(findings)
-        if not force and signature == self._loaded_signature and self._findings_by_id:
+        if signature == self._loaded_signature and self._findings_by_id:
             return
         self._loaded_signature = signature
 
@@ -372,10 +324,6 @@ class FindingsPage(ctk.CTkFrame):
 
     # --- Location-Based tab ------------------------------------------------
 
-    def _on_status_filter_changed(self, value: str) -> None:
-        self._status_filter = value
-        self._render_table()
-
     def _sort_key(self, finding):
         value = getattr(finding, self._sort_column)
         return (value is None, value)
@@ -394,13 +342,12 @@ class FindingsPage(ctk.CTkFrame):
         the same per-finding dict the Treeview's own `values=` tuple
         reads, so there is only one place the displayed values are
         computed, never two that could drift apart)."""
-        suffix = "" if self._status_filter == "All" else self._status_filter
         export_rows_with_ui(
             self,
             rows=self._current_display_rows,
             columns=COLUMNS,
             headings=HEADINGS,
-            suggested_filename=default_export_filename("Findings", suffix=suffix),
+            suggested_filename=default_export_filename("Findings"),
             sheet_title="Findings",
             row_style_fn=_findings_row_style,
         )
@@ -416,9 +363,6 @@ class FindingsPage(ctk.CTkFrame):
         query = self.search_entry.get().strip().lower()
         # Location-Based tab: every finding that isn't an HR rule.
         findings = [f for f in self._findings_by_id.values() if f.rule_name not in HR_RULE_NAMES]
-
-        if self._status_filter != "All":
-            findings = [f for f in findings if f.status == self._status_filter]
 
         if query:
             findings = [
@@ -495,7 +439,6 @@ class FindingsPage(ctk.CTkFrame):
                 "visit_date": finding.visit_date,
                 "rule_name": finding.rule_name,
                 "notification_status": self._display_status(finding),
-                "status": finding.status,
                 "message": finding.message,
                 "_row_tag": row_tag_name,
             }
@@ -513,21 +456,15 @@ class FindingsPage(ctk.CTkFrame):
 
     # --- HR-Based tab ------------------------------------------------------
 
-    def _on_hr_status_filter_changed(self, value: str) -> None:
-        self._hr_status_filter = value
-        self._render_hr_table()
-
     def _on_hr_export_clicked(self) -> None:
         """Exports the exact rows `_render_hr_table()` just displayed (post
-        status filter + search), same contract as the Location tab's own
-        Export."""
-        suffix = "" if self._hr_status_filter == "All" else self._hr_status_filter
+        search), same contract as the Location tab's own Export."""
         export_rows_with_ui(
             self,
             rows=self._hr_display_rows,
             columns=HR_COLUMNS,
             headings=HR_HEADINGS,
-            suggested_filename=default_export_filename("Low Working Hours", suffix=suffix),
+            suggested_filename=default_export_filename("Low Working Hours"),
             sheet_title="Low Working Hours",
         )
 
@@ -542,9 +479,6 @@ class FindingsPage(ctk.CTkFrame):
         # actionable and never emailed (build_email_batch withholds them), but
         # never hidden or removed. The finding itself is unchanged.
         findings = [f for f in self._findings_by_id.values() if f.rule_name in HR_RULE_NAMES]
-
-        if self._hr_status_filter != "All":
-            findings = [f for f in findings if f.status == self._hr_status_filter]
 
         if query:
             findings = [
@@ -572,7 +506,7 @@ class FindingsPage(ctk.CTkFrame):
             display_row = {
                 "employee": f"{finding.employee_name} ({finding.employee_code})",
                 "visit_date": finding.visit_date,
-                "status": hr_status_text(finding, self._region_suppressed_ids),
+                "status": status_text_for_display(finding, self._region_suppressed_ids),
                 **parsed,
             }
             self._hr_display_rows.append(display_row)
@@ -684,28 +618,3 @@ class FindingsPage(ctk.CTkFrame):
                 anchor="w",
             ).pack(anchor="w", pady=(Spacing.MD, 0))
             field("Reason", finding.suppression_reason)
-
-        ctk.CTkLabel(
-            self.detail_container, text="Review Status", font=Font.SMALL_BOLD, text_color=Color.TEXT_MUTED, anchor="w"
-        ).pack(anchor="w", pady=(Spacing.SM, 4))
-        StatusBadge(
-            self.detail_container, finding.status, STATUS_BADGE_KIND.get(finding.status, "neutral")
-        ).pack(anchor="w")
-
-        action_row = ctk.CTkFrame(self.detail_container, fg_color="transparent")
-        action_row.pack(fill="x", pady=(Spacing.LG, 0))
-
-        SecondaryButton(
-            action_row, text="Mark Reviewed", command=lambda: self._on_set_status(finding.finding_id, "Reviewed")
-        ).pack(fill="x", pady=(0, Spacing.SM))
-        SecondaryButton(
-            action_row, text="Mark Ignored", command=lambda: self._on_set_status(finding.finding_id, "Ignored")
-        ).pack(fill="x", pady=(0, Spacing.SM))
-        SecondaryButton(
-            action_row, text="Reset to Open", command=lambda: self._on_set_status(finding.finding_id, "Open")
-        ).pack(fill="x")
-
-    def _on_set_status(self, finding_id: int, status: str) -> None:
-        set_status(finding_id, status)
-        self._load_findings(force=True)  # the reviewer's own action always refreshes now
-        self._render_detail(self._findings_by_id.get(finding_id))

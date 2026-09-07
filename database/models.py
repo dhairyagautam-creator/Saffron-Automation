@@ -58,14 +58,14 @@ class RuleParameter(Base):
 
 class InvestigationFinding(Base):
     """One row per rule violation flagged for an employee on a given date,
-    tagged with the import_id of the session that generated it.
-
-    `status` defaults to "Open" and is set by a reviewer on the Findings
-    page (Reviewed/Ignored). Re-running the rule for the same import_id
-    carries forward the prior status for any (employee_code, visit_date)
-    combination that still matches — see rules/same_location.py. Findings
-    from an import_id other than the active session are preserved in the
-    database but not shown — see app/findings_service.py.
+    tagged with the import_id of the session that generated it. Purely
+    derived from raw_visits via the rule engine -- there is no human-writable
+    review status; re-running the rule for the same import_id recreates its
+    findings from scratch, carrying forward only the prior automatic
+    notification outcome (see rules/same_location.py) so an already-sent
+    finding isn't re-emailed. Findings from an import_id other than the
+    active session are preserved in the database but not shown — see
+    app/findings_service.py.
     """
 
     __tablename__ = "investigation_findings"
@@ -118,10 +118,9 @@ class InvestigationFinding(Base):
     hospital_lat = Column(Float, nullable=True)
     hospital_lon = Column(Float, nullable=True)
     hospital_distance_meters = Column(Integer, nullable=True)
-    status = Column(String, nullable=False, default="Open")
     created_at = Column(DateTime, nullable=False, default=datetime.now)
-    # Bumped on every reviewer status change (set_status()/
-    # set_notification_status() in app/findings_service.py).
+    # Bumped on every notification-status change (set_notification_status()
+    # in app/findings_service.py).
     updated_at = Column(DateTime, nullable=True)
 
 

@@ -14,10 +14,10 @@ from types import SimpleNamespace
 from ui.findings_page import findings_signature
 
 
-def _f(fid, notif=None, status="Open", reason=None, name="Asha", message="m"):
+def _f(fid, notif=None, reason=None, name="Asha", message="m"):
     return SimpleNamespace(
         finding_id=fid, notification_status=notif, suppression_reason=reason,
-        status=status, employee_name=name, message=message, rule_name="SAME_LOCATION",
+        employee_name=name, message=message, rule_name="SAME_LOCATION",
         visit_date=date(2026, 8, 7),
     )
 
@@ -39,10 +39,6 @@ def test_suppression_reverted_changes_signature():
     supp = [_f(1, "Suppressed - Region Rule")]
     reverted = [_f(1, None)]
     assert findings_signature(supp) != findings_signature(reverted)
-
-
-def test_review_status_change_changes_signature():
-    assert findings_signature([_f(1, status="Open")]) != findings_signature([_f(1, status="Reviewed")])
 
 
 if __name__ == "__main__":

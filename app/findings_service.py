@@ -11,8 +11,6 @@ from loguru import logger
 from database.connection import get_session
 from database.models import InvestigationFinding
 
-STATUSES = ("Open", "Reviewed", "Ignored")
-
 # Notification statuses that mean the canonical suppression pass withheld this
 # finding. That pass lives in ONE place -- app/notification_service.build_email_batch,
 # which reuses app/region_suppression (Kerala/Punjab etc.) and
@@ -82,9 +80,11 @@ def get_all_findings(import_id: int | None) -> list[InvestigationFinding]:
 
 
 def get_summary_counts(import_id: int | None) -> dict:
-    """Return {'Total': n, 'Open': n, 'Reviewed': n, 'Ignored': n} for the
-    given import_id. All zero if `import_id` is None."""
-    counts = {"Total": 0, "Open": 0, "Reviewed": 0, "Ignored": 0}
+    """Return {'Total': n, 'Open': n} for the given import_id -- 'Open' is
+    the count not yet successfully emailed (notification_status != "Sent"),
+    the same definition build_email_batch uses to decide what to process.
+    All zero if `import_id` is None."""
+    counts = {"Total": 0, "Open": 0}
     if import_id is None:
         return counts
 
@@ -95,35 +95,14 @@ def get_summary_counts(import_id: int | None) -> dict:
         session.close()
 
     counts["Total"] = len(rows)
-    for row in rows:
-        counts[row.status] = counts.get(row.status, 0) + 1
+    counts["Open"] = sum(1 for row in rows if row.notification_status != "Sent")
     return counts
-
-
-def set_status(finding_id: int, status: str) -> None:
-    """Update a single finding's review status."""
-    if status not in STATUSES:
-        raise ValueError(f"Unknown status '{status}', expected one of {STATUSES}")
-
-    session = get_session()
-    try:
-        finding = session.query(InvestigationFinding).filter_by(finding_id=finding_id).first()
-        if finding is None:
-            raise ValueError(f"No finding with id {finding_id}")
-        finding.status = status
-        finding.updated_at = datetime.now()
-        session.commit()
-    finally:
-        session.close()
-
-    logger.info(f"Finding {finding_id} marked as {status}")
 
 
 def set_notification_status(finding_id: int, notification_status: str, suppression_reason: str | None = None) -> None:
     """Record what happened to a finding's automatic notification —
     "Sent", "Hospital Suppressed", or "Failed" (see app/notification_service.py
-    and app/hospital_service.py). Separate from `status` (Open/Reviewed/
-    Ignored), which tracks manual review, not notification outcome.
+    and app/hospital_service.py).
 
     `suppression_reason=None` (the default) leaves whatever's already there
     untouched rather than clearing it -- this is what lets
@@ -202,10 +181,9 @@ def set_hospital_suppression(
 def get_notification_status_counts(import_id: int | None) -> dict:
     """Return {'Pending': n, 'Sent': n, 'Failed': n, 'Hospital Suppressed': n,
     'Suppressed - Region Rule': n} for the given import_id, based on each
-    finding's own `notification_status` — not the review `status` used by
-    get_summary_counts. A finding with no notification_status yet (the
-    pipeline hasn't reached it, or automatic sending is off) counts as
-    Pending. All zero if `import_id` is None."""
+    finding's own `notification_status`. A finding with no notification_status
+    yet (the pipeline hasn't reached it, or automatic sending is off) counts
+    as Pending. All zero if `import_id` is None."""
     counts = {"Pending": 0, "Sent": 0, "Failed": 0, "Hospital Suppressed": 0, "Suppressed - Region Rule": 0}
     if import_id is None:
         return counts

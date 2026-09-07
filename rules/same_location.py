@@ -246,11 +246,21 @@ def evaluate(import_id: int) -> dict:
 
         session = get_session()
         try:
-            # Carry forward any status a reviewer already set (Reviewed/Ignored)
-            # for a finding that still matches within this same import_id,
-            # instead of resetting to Open every time the rule re-runs.
-            existing_status = {
-                (row.employee_code, row.visit_date): row.status
+            # Carry forward the automatic notification outcome for a finding
+            # that still matches within this same import_id, instead of
+            # resetting it to unsent every time the rule re-runs -- this is
+            # what stops an already-emailed finding from being re-sent on a
+            # re-run (build_email_batch only processes notification_status
+            # != "Sent").
+            existing_outcome = {
+                (row.employee_code, row.visit_date): {
+                    "notification_status": row.notification_status,
+                    "suppression_reason": row.suppression_reason,
+                    "hospital_name": row.hospital_name,
+                    "hospital_lat": row.hospital_lat,
+                    "hospital_lon": row.hospital_lon,
+                    "hospital_distance_meters": row.hospital_distance_meters,
+                }
                 for row in session.query(InvestigationFinding)
                 .filter_by(rule_name=RULE_NAME, import_id=import_id)
                 .all()
@@ -260,8 +270,8 @@ def evaluate(import_id: int) -> dict:
                 rule_name=RULE_NAME, import_id=import_id
             ).delete()
             for finding in findings:
-                status = existing_status.get(
-                    (finding["employee_code"], finding["visit_date"]), "Open"
+                outcome = existing_outcome.get(
+                    (finding["employee_code"], finding["visit_date"]), {}
                 )
                 session.add(
                     InvestigationFinding(
@@ -279,9 +289,9 @@ def evaluate(import_id: int) -> dict:
                         cluster_lat=finding["cluster_lat"],
                         cluster_lon=finding["cluster_lon"],
                         division=finding["division"],
-                        status=status,
                         created_at=datetime.now(),
                         updated_at=datetime.now(),
+                        **outcome,
                     )
                 )
             session.commit()

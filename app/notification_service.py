@@ -83,7 +83,6 @@ from app.findings_service import (
     parse_hours_worked_message,
     set_hospital_suppression,
     set_notification_status,
-    set_status,
 )
 from app.geocoding_service import geocode_many, round_coordinate
 from app.hierarchy_parser import find_by_employee_code, find_by_employee_name
@@ -523,8 +522,8 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
 
     Returns a list of drafts: {manager_name, manager_email, subject, body,
     text_body, finding_ids, status, kind}. `kind` is "rbm", "master", or
-    "unresolved" — only "rbm" drafts drive a finding's status to Reviewed on
-    send; the master email is an informational copy and never does.
+    "unresolved" — only "rbm" drafts drive a finding's notification_status to
+    Sent on send; the master email is an informational copy and never does.
     status is "Draft" for anything routable, or "Unresolved" for findings
     whose RBM/email couldn't be found — those are still returned (as one
     combined draft) so nothing silently vanishes.
@@ -539,7 +538,7 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
     report = get_current_report()
     geocode_stats_by_employee: dict = {}
 
-    findings = [f for f in get_all_findings(import_id) if f.status == "Open"]
+    findings = [f for f in get_all_findings(import_id) if f.notification_status != "Sent"]
 
     progress_callback("hierarchy", label="Resolving hierarchy...")
     hierarchy_timer = PhaseTimer()
@@ -556,7 +555,7 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
         for finding in findings
     }
 
-    # Resolved for every Open finding up front, regardless of outcome — the
+    # Resolved for every not-yet-sent finding up front, regardless of outcome — the
     # master email needs all of them, not just the ones that route cleanly.
     enriched = []
     for finding in findings:
@@ -995,8 +994,8 @@ def preview_email_batch(import_id: int, progress_callback=None) -> dict:
     opened for inspection via the existing double-click preview. The one
     thing that never happens here is the actual SMTP send: no connection
     is opened, no message is transmitted anywhere, and no finding's
-    `status`/`notification_status` is advanced to Reviewed/Sent -- only
-    Hospital/Region Suppression's own decisions (already applied inside
+    `notification_status` is advanced to Sent -- only Hospital/Region
+    Suppression's own decisions (already applied inside
     build_email_batch) are reflected, since those aren't about sending.
 
     This lets the complete pipeline be validated against real production
@@ -1062,10 +1061,11 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
     routable draft — one per affected RBM, plus one per configured Master
     Email recipient (see app/master_email_recipients_service.py) — via
     Gmail SMTP over a single reused connection. Only an RBM draft's
-    success marks its covered findings Reviewed; every master draft is an
-    informational copy and never changes finding status on its own.
-    Findings whose email failed to send, or that were Unresolved, are left
-    Open so they're retried the next time this is called for this session.
+    success marks its covered findings' notification_status Sent; every
+    master draft is an informational copy and never changes finding status
+    on its own. Findings whose email failed to send, or that were
+    Unresolved, are left as-is so they're retried the next time this is
+    called for this session.
 
     Each draft's outcome (Sent/Failed/Unresolved/Skipped - No Data) is
     written to the DB and reflected in the in-memory send_state progress
@@ -1194,7 +1194,6 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
                     if draft.get("kind") == "rbm":
                         if draft["status"] == "Sent":
                             for finding_id in draft["finding_ids"].split(","):
-                                set_status(int(finding_id), "Reviewed")
                                 set_notification_status(int(finding_id), "Sent")
                         elif draft["status"] == "Failed":
                             for finding_id in draft["finding_ids"].split(","):

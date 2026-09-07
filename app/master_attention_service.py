@@ -267,18 +267,18 @@ def build_attention_records(
     return records
 
 
-def get_current_attention_records(statuses: tuple[str, ...] = ("Open",)) -> list[EmployeeAttentionRecord]:
-    """The Master page's data source TODAY: the active-session findings,
-    filtered to `statuses` (Open by default -- an actioned Reviewed/Ignored
-    finding no longer "needs attention") AND to actionable findings only --
-    region/hospital-suppressed findings are dropped here, at the business
-    layer (via app.findings_service.is_finding_suppressed, the canonical
-    rule), so suppressed employees never reach aggregation, KPIs, the table,
-    or drill-down. Empty list when there's no active session. To switch to
+def get_current_attention_records() -> list[EmployeeAttentionRecord]:
+    """The Master page's data source TODAY: the active-session findings not
+    yet successfully emailed (notification_status != "Sent" -- an already-sent
+    finding no longer "needs attention") AND actionable only -- region/
+    hospital-suppressed findings are dropped here, at the business layer (via
+    app.findings_service.is_finding_suppressed, the canonical rule), so
+    suppressed employees never reach aggregation, KPIs, the table, or
+    drill-down. Empty list when there's no active session. To switch to
     historical data later, call build_attention_records() with a snapshot's
     findings instead -- this function is the only thing that binds the
     aggregation to "current dataset"."""
     import_id = get_active_import_id()
-    findings = [f for f in get_all_findings(import_id) if f.status in statuses]
+    findings = [f for f in get_all_findings(import_id) if f.notification_status != "Sent"]
     findings = filter_actionable(findings, import_id)  # canonical region + hospital suppression
     return build_attention_records(findings)

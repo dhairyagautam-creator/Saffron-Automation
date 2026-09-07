@@ -10,15 +10,15 @@ from types import SimpleNamespace
 
 from app.region_suppression import is_region_suppressed
 from app.suppression_service import region_suppressed_ids, suppressed_finding_ids
-from ui.findings_page import HR_RULE_NAMES, hr_status_text
+from ui.findings_page import HR_RULE_NAMES, status_text_for_display
 
 HR_MSG = "Worked 5.2h (10:15–16:25), below the 7.5h minimum. Review Required."
 
 
-def _hr(fid, code, status="Open", notif=None):
+def _hr(fid, code, notif=None):
     return SimpleNamespace(
         finding_id=fid, employee_code=code, employee_name="Emp", rule_name="HOURS_WORKED",
-        visit_date=date(2026, 8, 7), status=status, notification_status=notif, message=HR_MSG,
+        visit_date=date(2026, 8, 7), notification_status=notif, message=HR_MSG,
     )
 
 
@@ -43,7 +43,7 @@ def test_region_suppressed_hr_status_and_tint():
     hr = _hr(1, "E1")
     rset = region_suppressed_ids([hr], _rmap([("E1", "Kerala - KOC")]))
     assert 1 in rset                                   # -> row gets region_suppressed tint
-    assert hr_status_text(hr, rset) == "Suppressed - Region Rule"
+    assert status_text_for_display(hr, rset) == "Suppressed - Region Rule"
 
 
 # 3. excluded from email (build_email_batch withholds via is_region_suppressed)
@@ -58,12 +58,13 @@ def test_region_suppressed_hr_not_actionable():
     assert 1 in suppressed_finding_ids([hr], _rmap([("E1", "Punjab")]))
 
 
-# 4. a non-suppressed HR finding is unchanged
+# 4. a non-suppressed HR finding shows its own notification outcome, same
+#    as the Location tab -- no separate review-status concept anymore.
 def test_non_suppressed_hr_unchanged():
-    hr = _hr(2, "E2", status="Reviewed")
+    hr = _hr(2, "E2", notif="Sent")
     rset = region_suppressed_ids([hr], _rmap([("E2", "Karnataka")]))
     assert 2 not in rset
-    assert hr_status_text(hr, rset) == "Reviewed"      # review status, unchanged
+    assert status_text_for_display(hr, rset) == "Email Sent"
 
 
 # 5. the 15s refresh doesn't undo the display -- status comes from the live
@@ -71,8 +72,8 @@ def test_non_suppressed_hr_unchanged():
 #    notification_status.
 def test_hr_display_stable_across_refresh():
     rset = region_suppressed_ids([_hr(1, "E1")], _rmap([("E1", "Punjab")]))
-    assert hr_status_text(_hr(1, "E1", notif=None), rset) == "Suppressed - Region Rule"
-    assert hr_status_text(_hr(1, "E1", notif="Suppressed - Region Rule"), rset) == "Suppressed - Region Rule"
+    assert status_text_for_display(_hr(1, "E1", notif=None), rset) == "Suppressed - Region Rule"
+    assert status_text_for_display(_hr(1, "E1", notif="Suppressed - Region Rule"), rset) == "Suppressed - Region Rule"
 
 
 if __name__ == "__main__":

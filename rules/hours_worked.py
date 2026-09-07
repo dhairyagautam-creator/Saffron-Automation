@@ -7,8 +7,9 @@ i.e. the working day looks too short.
 Mirrors rules/same_location.py exactly in shape: evaluated only against the
 active session file's rows (import_id), re-running for the same import_id
 replaces only that import's HOURS_WORKED findings and carries forward any
-reviewer status, and the threshold is read from rule_parameters so it can be
-changed on the Parameters page with no code change.
+automatic notification outcome, and the threshold is read from
+rule_parameters so it can be changed on the Parameters page with no code
+change.
 
 Unlike Same Location, this rule applies to EVERY employee/day (no BM/ABM
 designation filter) — that's the stated spec for Hours Worked.
@@ -104,10 +105,13 @@ def evaluate(import_id: int) -> dict:
 
         session = get_session()
         try:
-            # Carry forward any reviewer status for a still-matching finding,
-            # same as rules/same_location.py.
-            existing_status = {
-                (row.employee_code, row.visit_date): row.status
+            # Carry forward any automatic notification outcome for a
+            # still-matching finding, same as rules/same_location.py.
+            existing_outcome = {
+                (row.employee_code, row.visit_date): {
+                    "notification_status": row.notification_status,
+                    "suppression_reason": row.suppression_reason,
+                }
                 for row in session.query(InvestigationFinding)
                 .filter_by(rule_name=RULE_NAME, import_id=import_id)
                 .all()
@@ -116,7 +120,7 @@ def evaluate(import_id: int) -> dict:
                 rule_name=RULE_NAME, import_id=import_id
             ).delete()
             for finding in findings:
-                status = existing_status.get((finding["employee_code"], finding["visit_date"]), "Open")
+                outcome = existing_outcome.get((finding["employee_code"], finding["visit_date"]), {})
                 session.add(
                     InvestigationFinding(
                         import_id=import_id,
@@ -126,9 +130,9 @@ def evaluate(import_id: int) -> dict:
                         rule_name=RULE_NAME,
                         message=finding["message"],
                         division=finding["division"],
-                        status=status,
                         created_at=datetime.now(),
                         updated_at=datetime.now(),
+                        **outcome,
                     )
                 )
             session.commit()
