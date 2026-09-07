@@ -1,10 +1,5 @@
 """The Path Validator module: branded sidebar navigation plus page content.
 
-Also owns the User Mode / Developer Mode shell — the amber banner, the
-"Developer Mode" badge, and the conditional Developer page — and rebuilds
-itself when the mode (or a feature flag) changes so every mode-gated
-section re-evaluates. See app/mode_state.py for the Developer Mode design.
-
 This is the entire Saffron Validator experience, unchanged, now embedded as
 one module inside the larger Saffron Automation shell (ui/main_window.py)
 rather than being the application's root window itself.
@@ -16,9 +11,7 @@ import customtkinter as ctk
 from loguru import logger
 from PIL import Image
 
-from app.mode_state import is_developer_mode, enter_developer_mode, exit_developer_mode
 from ui.about_page import AboutPage
-from ui.developer_page import DeveloperPage
 from ui.email_center_page import EmailCenterPage
 from ui.findings_page import FindingsPage
 from ui.icons import get_icon
@@ -44,13 +37,9 @@ BASE_PAGES = (
     "About",
 )
 
-DEV_BANNER_TEXT = "  DEVELOPER MODE  —  Experimental Mode. Changes do not affect Production until published."
-
-
 class PathValidatorModule(ctk.CTkFrame):
-    """The Path Validator module: an optional Developer-Mode banner, a
-    branded left sidebar, and a page content area. Rebuilds its shell on
-    mode change. Embedded as a screen inside MainWindow's screen registry."""
+    """The Path Validator module: a branded left sidebar and a page content
+    area. Embedded as a screen inside MainWindow's screen registry."""
 
     def __init__(self, master, on_home) -> None:
         super().__init__(master, fg_color=Color.SURFACE)
@@ -60,7 +49,6 @@ class PathValidatorModule(ctk.CTkFrame):
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
         self.active_page: str | None = None
 
-        self._banner: ctk.CTkFrame | None = None
         self._body: ctk.CTkFrame | None = None
 
         self._build_shell()
@@ -75,56 +63,15 @@ class PathValidatorModule(ctk.CTkFrame):
         button again would."""
         self.show_page(self.active_page or "Master")
 
-    # --- Mode switching --------------------------------------------------
-
-    def set_mode(self, developer: bool) -> None:
-        """Enter or leave Developer Mode and rebuild the shell so the banner,
-        badge, Developer page, and every mode-gated section update at once."""
-        if developer:
-            enter_developer_mode()
-        else:
-            exit_developer_mode()
-        self.rebuild_shell()
-
-    def rebuild_shell(self) -> None:
-        """Tear down and rebuild the banner + sidebar + pages. Used on mode
-        change and on a feature-flag change (so gated sections re-evaluate).
-        Rare operation — pages reload their own data via on_show, so a full
-        rebuild is safe and keeps everything consistent."""
-        previous = self.active_page
-        self._build_shell()
-        target = previous if previous in self.pages else "Master"
-        self.show_page(target)
-
-    def _page_order(self) -> tuple[str, ...]:
-        if is_developer_mode():
-            # Developer page sits just before About.
-            return BASE_PAGES[:-1] + ("Developer", "About")
-        return BASE_PAGES
 
     # --- Shell construction ----------------------------------------------
 
     def _build_shell(self) -> None:
-        if self._banner is not None:
-            self._banner.destroy()
-            self._banner = None
         if self._body is not None:
             self._body.destroy()
         self.pages.clear()
         self.nav_buttons.clear()
         self.active_page = None
-
-        if is_developer_mode():
-            self._banner = ctk.CTkFrame(self, fg_color=Color.PRIMARY, corner_radius=0, height=34)
-            self._banner.pack(side="top", fill="x")
-            self._banner.pack_propagate(False)
-            ctk.CTkLabel(
-                self._banner,
-                text=DEV_BANNER_TEXT,
-                font=Font.SMALL_BOLD,
-                text_color=Color.TEXT_ON_PRIMARY,
-                anchor="w",
-            ).pack(side="left", padx=Spacing.MD)
 
         self._body = ctk.CTkFrame(self, fg_color=Color.SURFACE, corner_radius=0)
         self._body.pack(side="top", fill="both", expand=True)
@@ -155,22 +102,12 @@ class PathValidatorModule(ctk.CTkFrame):
             title_box, text="Path Validator", font=Font.SMALL, text_color=Color.TEXT_SECONDARY, anchor="w"
         ).pack(anchor="w")
 
-        if is_developer_mode():
-            ctk.CTkLabel(
-                sidebar,
-                text="  DEVELOPER MODE  ",
-                font=Font.SMALL_BOLD,
-                text_color=Color.TEXT_ON_PRIMARY,
-                fg_color=Color.PRIMARY,
-                corner_radius=6,
-            ).pack(pady=(0, 8))
-
         ctk.CTkFrame(sidebar, fg_color=Color.DIVIDER, height=1).pack(fill="x", padx=16, pady=(0, 8))
 
         nav_container = ctk.CTkFrame(sidebar, fg_color="transparent")
         nav_container.pack(fill="x", padx=12)
 
-        for name in self._page_order():
+        for name in BASE_PAGES:
             button = ctk.CTkButton(
                 nav_container,
                 text=f"   {name}",
@@ -207,8 +144,6 @@ class PathValidatorModule(ctk.CTkFrame):
         self.pages["Parameters"] = ParametersPage(container)
         self.pages["Settings"] = SettingsPage(container, main_window=self)
         self.pages["About"] = AboutPage(container)
-        if is_developer_mode():
-            self.pages["Developer"] = DeveloperPage(container, main_window=self)
 
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")

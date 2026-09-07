@@ -2,14 +2,13 @@
 to any single settings section — currently just whether the first-run
 Setup Wizard (ui/setup_wizard.py) has been completed.
 
-`setup_completed` is GLOBAL, not per-environment: onboarding is an app-wide
+`setup_completed` is app-wide
 fact, so it's always stored on the 'user' app_settings row regardless of
 which mode is active (see database/models.py).
 """
 
 from loguru import logger
 
-from app.mode_state import USER_ENVIRONMENT
 from database.connection import get_config_session
 from database.models import AppSettings
 
@@ -17,7 +16,7 @@ from database.models import AppSettings
 def is_setup_completed() -> bool:
     session = get_config_session()
     try:
-        row = session.query(AppSettings).filter_by(environment=USER_ENVIRONMENT).first()
+        row = session.query(AppSettings).first()
     finally:
         session.close()
 
@@ -31,9 +30,9 @@ def set_setup_completed(completed: bool) -> None:
     other saved setting. Always stored on the global (user) row."""
     session = get_config_session()
     try:
-        row = session.query(AppSettings).filter_by(environment=USER_ENVIRONMENT).first()
+        row = session.query(AppSettings).first()
         if row is None:
-            row = AppSettings(environment=USER_ENVIRONMENT)
+            row = AppSettings()
             session.add(row)
         row.setup_completed = 1 if completed else 0
         session.commit()

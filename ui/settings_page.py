@@ -1,23 +1,19 @@
-"""Settings page: Email Settings, the (Developer-Mode-only) Hospital
-Suppression key, and the Developer Mode unlock/entry point."""
+"""Settings page: Email Settings and the Location Services (Geoapify) key."""
 
 from tkinter import messagebox
 
 import customtkinter as ctk
 from loguru import logger
 
-from app.dev_auth_service import is_dev_password_set, set_dev_password, verify_dev_password
 from app.email_settings_service import get_settings, save_settings
 from app.geoapify_settings_service import get_geoapify_api_key, save_geoapify_api_key
-from app.mode_state import is_developer_mode
 from app.smtp_service import test_connection
 from ui.components import Card, PrimaryButton, SecondaryButton, SectionHeader
 from ui.theme import Color, Font, Spacing
 
 
 class SettingsPage(ctk.CTkFrame):
-    """Email Settings, plus the Developer Mode gate. `main_window` is used to
-    switch the whole app into/out of Developer Mode after unlocking."""
+    """Email Settings and the Location Services key."""
 
     def __init__(self, master, main_window=None) -> None:
         super().__init__(master, fg_color=Color.SURFACE)
@@ -113,13 +109,9 @@ class SettingsPage(ctk.CTkFrame):
         )
         self.result_label.pack(anchor="w", pady=(Spacing.SM, 0))
 
-        # --- Location Services (Geoapify) — always available, in both modes:
-        #     it powers the precise landmark addresses shown in every email
-        #     (and Hospital Suppression when that experimental feature is on).
+        # --- Location Services (Geoapify): powers the precise landmark
+        #     addresses shown in every email, and Hospital Suppression.
         self._build_location_card(outer)
-
-        # --- Developer Mode ------------------------------------------------
-        self._build_developer_card(outer)
 
     def _build_location_card(self, outer) -> None:
         card = Card(outer)
@@ -161,53 +153,6 @@ class SettingsPage(ctk.CTkFrame):
             body, text="", font=Font.SMALL_BOLD, anchor="w", wraplength=650, justify="left"
         )
         self.geoapify_result_label.pack(anchor="w")
-
-    def _build_developer_card(self, outer) -> None:
-        card = Card(outer)
-        card.pack(fill="x", pady=(Spacing.LG, 0))
-        body = ctk.CTkFrame(card, fg_color="transparent")
-        body.pack(fill="x", padx=Spacing.LG, pady=Spacing.LG)
-
-        ctk.CTkLabel(
-            body, text="Developer Mode", font=Font.H2, text_color=Color.TEXT_PRIMARY, anchor="w"
-        ).pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(
-            body,
-            text=(
-                "A separate, password-protected environment for testing experimental features "
-                "(currently Hospital Suppression) without affecting production. Nothing done in "
-                "Developer Mode reaches User Mode until you Publish."
-            ),
-            font=Font.SMALL,
-            text_color=Color.TEXT_MUTED,
-            anchor="w",
-            wraplength=650,
-            justify="left",
-        ).pack(anchor="w", pady=(0, Spacing.MD))
-
-        self.dev_result_label = ctk.CTkLabel(body, text="", font=Font.SMALL_BOLD, anchor="w", wraplength=650, justify="left")
-
-        if is_developer_mode():
-            ctk.CTkLabel(
-                body, text="Developer Mode is active.", font=Font.BODY_BOLD, text_color=Color.PRIMARY, anchor="w"
-            ).pack(anchor="w", pady=(0, Spacing.SM))
-            SecondaryButton(body, text="Exit Developer Mode", command=self._on_exit_clicked).pack(anchor="w")
-        elif not is_dev_password_set():
-            ctk.CTkLabel(
-                body, text="Set a Developer Password", font=Font.BODY_BOLD, text_color=Color.TEXT_PRIMARY, anchor="w"
-            ).pack(anchor="w")
-            self.dev_password_entry = ctk.CTkEntry(body, placeholder_text="Choose a password", show="*")
-            self.dev_password_entry.pack(fill="x", pady=(4, Spacing.SM))
-            PrimaryButton(body, text="Set Password & Enter Developer Mode", command=self._on_set_password_clicked).pack(anchor="w")
-        else:
-            ctk.CTkLabel(
-                body, text="Enter Developer Password", font=Font.BODY_BOLD, text_color=Color.TEXT_PRIMARY, anchor="w"
-            ).pack(anchor="w")
-            self.dev_password_entry = ctk.CTkEntry(body, placeholder_text="Developer password", show="*")
-            self.dev_password_entry.pack(fill="x", pady=(4, Spacing.SM))
-            PrimaryButton(body, text="Unlock Developer Mode", command=self._on_unlock_clicked).pack(anchor="w")
-
-        self.dev_result_label.pack(anchor="w", pady=(Spacing.SM, 0))
 
     # --- Data --------------------------------------------------------------
 
@@ -260,27 +205,3 @@ class SettingsPage(ctk.CTkFrame):
         self.result_label.configure(text=message, text_color=Color.SUCCESS if success else Color.ERROR)
         self.test_button.configure(state="normal")
         self.save_button.configure(state="normal")
-
-    # --- Developer Mode gate ----------------------------------------------
-
-    def _enter_dev_mode(self) -> None:
-        if self.main_window is not None:
-            self.main_window.set_mode(True)  # rebuilds the whole shell
-
-    def _on_set_password_clicked(self) -> None:
-        password = self.dev_password_entry.get()
-        if not password.strip():
-            self.dev_result_label.configure(text="Please choose a password.", text_color=Color.ERROR)
-            return
-        set_dev_password(password)
-        self._enter_dev_mode()
-
-    def _on_unlock_clicked(self) -> None:
-        if verify_dev_password(self.dev_password_entry.get()):
-            self._enter_dev_mode()
-        else:
-            self.dev_result_label.configure(text="Incorrect password.", text_color=Color.ERROR)
-
-    def _on_exit_clicked(self) -> None:
-        if self.main_window is not None:
-            self.main_window.set_mode(False)

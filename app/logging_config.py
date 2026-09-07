@@ -24,21 +24,8 @@ from app.config import LOGS_DIR
 
 _LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
-    "<magenta>{extra[mode]:<9}</magenta> | "
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )
-
-
-def _current_mode() -> str:
-    """The active environment, tagged onto every log record so User Mode and
-    Developer Mode activity can be told apart in the logs. Imported lazily and
-    defensively — logging must never fail because mode state is unavailable."""
-    try:
-        from app.mode_state import current_environment
-
-        return current_environment()
-    except Exception:
-        return "user"
 
 
 def _fallback_log_dir() -> Path:
@@ -55,11 +42,6 @@ def configure_logging() -> None:
     entirely) never stops the application from starting."""
     logger.remove()  # drop the default handler so we control format/sinks
 
-    # Stamp every record with the mode it was emitted in. Developer Mode and
-    # User Mode are fully isolated (separate data DBs); their logs are too —
-    # each record is tagged and routed to its own file below.
-    logger.configure(patcher=lambda record: record["extra"].update(mode=_current_mode()))
-
     if sys.stderr is not None:
         try:
             logger.add(sys.stderr, level="INFO", format=_LOG_FORMAT)
@@ -69,21 +51,12 @@ def configure_logging() -> None:
     for candidate_dir in (LOGS_DIR, _fallback_log_dir()):
         try:
             candidate_dir.mkdir(parents=True, exist_ok=True)
-            # Two file sinks, one per environment, filtered on the record's
-            # mode tag: User Mode activity lands only in saffron_validator.log,
-            # Developer Mode activity only in saffron_validator_dev.log — so a
-            # dev-mode experiment can never muddy the production log and vice
-            # versa. Shared startup lines (before any mode switch) are User Mode.
-            common = dict(level="DEBUG", rotation="5 MB", retention="10 days", encoding="utf-8")
             logger.add(
                 candidate_dir / "saffron_validator.log",
-                filter=lambda record: record["extra"].get("mode") != "developer",
-                **common,
-            )
-            logger.add(
-                candidate_dir / "saffron_validator_dev.log",
-                filter=lambda record: record["extra"].get("mode") == "developer",
-                **common,
+                level="DEBUG",
+                rotation="5 MB",
+                retention="10 days",
+                encoding="utf-8",
             )
             break  # first directory that actually works wins
         except Exception:

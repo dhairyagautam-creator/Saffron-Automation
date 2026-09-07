@@ -101,7 +101,7 @@ def _in_memory_session_factory():
 
 @pytest.fixture(autouse=True)
 def _isolated_db_and_hierarchy(monkeypatch):
-    monkeypatch.setattr("database.connection._ConfigSession", _in_memory_session_factory())
+    monkeypatch.setattr("database.connection._Session", _in_memory_session_factory())
     monkeypatch.setattr(wds, "load_doj_by_code", lambda: {})
     monkeypatch.setattr(wds, "load_doj_by_name", lambda: {})
 

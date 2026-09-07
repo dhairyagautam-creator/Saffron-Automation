@@ -29,7 +29,6 @@ from loguru import logger
 from app.config import REQUIRED_COLUMNS
 from app.coordinates import parse_coordinates
 from app.email_settings_service import is_automatic_sending_enabled
-from app.feature_flags_service import is_feature_enabled
 from app.findings_service import get_summary_counts
 from app.metrics import calculate_metrics
 from app.notification_service import preview_email_batch, send_all_emails
@@ -160,14 +159,9 @@ class OperationsPage(ctk.CTkFrame):
     def __init__(self, master) -> None:
         super().__init__(master, fg_color=Color.SURFACE)
 
-        # The Hospital Suppression progress row only exists when that
-        # experimental feature is on for the current mode — hidden from
-        # production entirely. `_stage_order` drives both the rows and the
-        # retroactive-completion sweep, so they stay consistent.
-        self._stages = [
-            s for s in PIPELINE_STAGES
-            if s[0] != "hospital_suppression" or is_feature_enabled("hospital_suppression")
-        ]
+        # `_stage_order` drives both the rows and the retroactive-completion
+        # sweep, so they stay consistent.
+        self._stages = list(PIPELINE_STAGES)
         self._stage_order = [key for key, *_ in self._stages]
 
         self.progress_rows: dict[str, ProgressRow] = {}

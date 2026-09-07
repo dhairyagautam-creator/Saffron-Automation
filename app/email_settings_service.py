@@ -13,7 +13,6 @@ from datetime import datetime
 
 from loguru import logger
 
-from app.mode_state import current_environment
 from database.connection import get_config_session
 from database.models import AppSettings
 
@@ -25,13 +24,12 @@ DEFAULT_MASTER_EMAIL = "gddesk@saffronformulations.com"
 
 def get_settings() -> dict:
     """Return {'sender_email', 'app_password', 'automatic_sending_enabled',
-    'master_email'} for the CURRENT mode's environment (Developer Mode and
-    User Mode keep separate credentials — see app/mode_state.py). Values are
+    'master_email'}. Values are
     empty/False if nothing has been saved yet, except `master_email` which
     falls back to DEFAULT_MASTER_EMAIL."""
     session = get_config_session()
     try:
-        row = session.query(AppSettings).filter_by(environment=current_environment()).first()
+        row = session.query(AppSettings).first()
     finally:
         session.close()
 
@@ -61,15 +59,15 @@ def get_settings() -> dict:
 def save_settings(
     sender_email: str, app_password: str, automatic_sending_enabled: bool, master_email: str | None = None
 ) -> None:
-    """Upsert the CURRENT mode's environment settings row — saving in
+    """Upsert the settings row — saving in
     Developer Mode never touches the User Mode row and vice versa.
     `master_email` left as None keeps whatever was already saved (or the
     default, if nothing was) rather than blanking it out."""
     session = get_config_session()
     try:
-        row = session.query(AppSettings).filter_by(environment=current_environment()).first()
+        row = session.query(AppSettings).first()
         if row is None:
-            row = AppSettings(environment=current_environment())
+            row = AppSettings()
             session.add(row)
         row.sender_gmail_address = sender_email
         row.gmail_app_password = app_password

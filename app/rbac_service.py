@@ -3,7 +3,7 @@ sign-in. Reads from the `profiles`/`user_module_permissions` tables (see
 supabase/migrations/0020_module_based_permissions.sql) and stores the
 result in app/rbac_state.py, the centralized, in-memory place the rest of
 the app reads "who is this / what can they do" from -- mirrors
-app/mode_state.py's pattern.
+a pure leaf module's pattern.
 
 This module only LOADS data and logs what it found. It does not enforce
 per-module permissions -- no feature is blocked, no UI is hidden, based on

@@ -43,43 +43,17 @@ class ActiveSession(Base):
 class RuleParameter(Base):
     """A single named parameter for a named rule, editable from the
     Parameters page. Values are stored as text and cast by whoever reads
-    them, since different rules may need different value types.
-
-    Scoped by `environment` ('user' vs 'developer') so User Mode and
-    Developer Mode keep completely separate rule thresholds — see
-    app/mode_state.py and app/rule_parameters.py. Uniqueness is per
-    (environment, rule, parameter)."""
+    them, since different rules may need different value types."""
 
     __tablename__ = "rule_parameters"
     __table_args__ = (
-        UniqueConstraint("environment", "rule_name", "parameter_name", name="uq_rule_parameter"),
+        UniqueConstraint("rule_name", "parameter_name", name="uq_rule_parameter"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    environment = Column(String, nullable=False, default="user")
     rule_name = Column(String, nullable=False)
     parameter_name = Column(String, nullable=False)
     parameter_value = Column(String, nullable=False)
-
-
-class FeatureFlag(Base):
-    """A named on/off feature toggle, scoped by `environment`. This is the
-    core of the Developer Mode system: an experimental feature (starting
-    with Hospital Suppression) is enabled in the 'developer' environment
-    and disabled in 'user', so production never runs it until the developer
-    presses Publish to User Mode (see app/publish_service.py). Adding a new
-    experimental feature is just a new flag plus code gated on
-    app/feature_flags_service.is_feature_enabled(...)."""
-
-    __tablename__ = "feature_flags"
-    __table_args__ = (
-        UniqueConstraint("environment", "flag_name", name="uq_feature_flag"),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    environment = Column(String, nullable=False)
-    flag_name = Column(String, nullable=False)
-    enabled = Column(Integer, nullable=False, default=0)  # 0/1
 
 
 class InvestigationFinding(Base):
@@ -354,26 +328,13 @@ class MasterEmailRecipient(Base):
 
 
 class AppSettings(Base):
-    """Application settings, one row per `environment` ('user' vs
-    'developer') so Developer Mode and User Mode keep completely separate
-    credentials/config — see app/mode_state.py, app/email_settings_service.py,
-    app/geoapify_settings_service.py. `gmail_app_password` is a Gmail App
-    Password, stored as entered — this is a local desktop app with no
-    external credential store to delegate to.
-
-    Two fields are deliberately GLOBAL rather than per-environment and are
-    only ever read/written on the 'user' row: `setup_completed` (onboarding
-    is app-wide) and `dev_password_hash`/`dev_password_salt` (the gate into
-    Developer Mode itself). See app/app_state_service.py and
-    app/dev_auth_service.py."""
+    """Application settings — a single row. `gmail_app_password` is a Gmail
+    App Password, stored as entered — this is a local desktop app with no
+    external credential store to delegate to."""
 
     __tablename__ = "app_settings"
-    __table_args__ = (
-        UniqueConstraint("environment", name="uq_app_settings_environment"),
-    )
 
     id = Column(Integer, primary_key=True)
-    environment = Column(String, nullable=False, default="user")
     sender_gmail_address = Column(String, nullable=True)
     gmail_app_password = Column(String, nullable=True)
     automatic_email_enabled = Column(Integer, nullable=False, default=0)  # 0/1
@@ -387,22 +348,13 @@ class AppSettings(Base):
     # proved unreliable in production (rate limits, full outages, slow
     # HTTP 504s) despite being logically correct when it did respond.
     geoapify_api_key = Column(String, nullable=True)
-    # GLOBAL (user row only): whether the first-run Setup Wizard
-    # (ui/setup_wizard.py) has been completed at least once.
+    # Whether the first-run Setup Wizard (ui/setup_wizard.py) has been
+    # completed at least once.
     setup_completed = Column(Integer, nullable=False, default=0)  # 0/1
-    # GLOBAL (user row only): salted PBKDF2 hash of the Developer Mode
-    # password. Never the plaintext, never hardcoded — set/changed from
-    # inside Developer Mode (see app/dev_auth_service.py).
-    dev_password_hash = Column(String, nullable=True)
-    dev_password_salt = Column(String, nullable=True)
-    # GLOBAL (user row only): the one-time company-wide Inventory data
-    # factory reset (see app/inventory_factory_reset.py) has completed --
-    # both the local InventoryThreshold/InventoryReplenishment/CwhStock
-    # clear AND the cloud clear succeeded. Set ONLY after both succeed;
-    # left 0 on any failure (e.g. Supabase unreachable) so the reset
-    # retries on the next launch rather than being silently marked done
-    # when it wasn't. Same "GLOBAL, user row only" convention as
-    # setup_completed above.
+    # The one-time company-wide Inventory data factory reset (see
+    # app/inventory_factory_reset.py) has completed. Set ONLY after it
+    # succeeds; left 0 on any failure so the reset retries on the next
+    # launch rather than being silently marked done when it wasn't.
     inventory_data_reset_completed = Column(Integer, nullable=False, default=0)  # 0/1
     updated_at = Column(DateTime, nullable=True)
 

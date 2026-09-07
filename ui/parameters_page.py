@@ -17,18 +17,16 @@ from tkinter import colorchooser
 
 import customtkinter as ctk
 
-from app.mode_state import is_developer_mode
 from app.rule_parameters import DEFAULT_PARAMETERS, get_parameters, set_parameter
 from ui.components import Card, PrimaryButton, SecondaryButton, SectionHeader
 from ui.theme import Color, Font, Spacing
 
-# Sections shown only in Developer Mode, hidden from production. Hospital
-# Suppression is an always-on production pipeline stage as of v1.3 (see
-# app/notification_service.py), but per the "no hospital configuration
-# screens in production" requirement its search-radius knob stays visible
-# only in Developer Mode; production silently uses the 100m default from
+# Hidden sections. Hospital Suppression is an always-on production pipeline
+# stage (see app/notification_service.py), but per the "no hospital
+# configuration screens in production" requirement its search-radius knob is
+# not shown; it uses the 100m default from
 # app/rule_parameters.DEFAULT_PARAMETERS["HOSPITAL_SUPPRESSION"].
-DEVELOPER_ONLY_SECTIONS = {"HOSPITAL_SUPPRESSION"}
+HIDDEN_SECTIONS = {"HOSPITAL_SUPPRESSION"}
 
 DIVISION_SORT_OPTIONS = [
     ("employees_flagged", "Employees Flagged"),
@@ -281,12 +279,7 @@ class ParametersPage(ctk.CTkFrame):
             top_bar, "Parameters", "Tune every rule's thresholds and dashboard settings without touching any code"
         ).pack(side="left", anchor="w")
 
-        # Developer-Mode-only sections (e.g. Hospital Suppression's radius
-        # knob) are hidden from production — see DEVELOPER_ONLY_SECTIONS.
-        self._active_sections = [
-            s for s in RULE_SECTIONS
-            if s["rule_name"] not in DEVELOPER_ONLY_SECTIONS or is_developer_mode()
-        ]
+        self._active_sections = [s for s in RULE_SECTIONS if s["rule_name"] not in HIDDEN_SECTIONS]
 
         for section in self._active_sections:
             self._build_section_card(outer, section)

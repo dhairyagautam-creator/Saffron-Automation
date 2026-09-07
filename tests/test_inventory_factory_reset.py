@@ -29,7 +29,7 @@ def _in_memory_session_factory():
 
 @pytest.fixture(autouse=True)
 def _isolated_db(monkeypatch):
-    monkeypatch.setattr("database.connection._ConfigSession", _in_memory_session_factory())
+    monkeypatch.setattr("database.connection._Session", _in_memory_session_factory())
 
 
 def _seed_inventory_data():
@@ -94,7 +94,7 @@ def _counts():
 def _marker() -> bool:
     session = get_config_session()
     try:
-        row = session.query(AppSettings).filter_by(environment="user").first()
+        row = session.query(AppSettings).first()
         return bool(row and row.inventory_data_reset_completed)
     finally:
         session.close()

@@ -5,7 +5,6 @@ import sys
 import customtkinter as ctk
 from loguru import logger
 
-from app.feature_flags_service import ensure_flag_defaults
 from app.inventory_factory_reset import run_inventory_factory_reset_if_needed
 from app.inventory_parameters_service import ensure_defaults as ensure_inventory_parameter_defaults
 from app.logging_config import configure_logging
@@ -103,7 +102,6 @@ def main() -> None:
         ensure_inventory_parameter_defaults()
         ensure_work_distribution_parameter_defaults()
         ensure_manager_work_allocation_parameter_defaults()
-        ensure_flag_defaults()
     except Exception as exc:
         _fatal_startup_error(
             "Saffron Automation could not open its database.\n\n"

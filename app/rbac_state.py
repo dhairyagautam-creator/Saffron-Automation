@@ -2,8 +2,7 @@
 they can access, once sign-in and permission loading (app/rbac_service.py)
 have both succeeded.
 
-Deliberately in-memory only and structured like app/mode_state.py's
-"current environment" pattern: a pure leaf module holding process-wide
+Deliberately in-memory only: a pure leaf module holding process-wide
 state, populated/cleared by the auth flow, read from anywhere in the app
 that needs to know "who is this" or "what can they do."
 

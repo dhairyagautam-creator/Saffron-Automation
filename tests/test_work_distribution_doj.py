@@ -6,7 +6,7 @@ exercising app.hierarchy_parser's own DB -- the DOJ RULE itself is already
 covered directly, DB-free, in test_doj_eligibility_service.py.
 
 The in-memory database is wired in by monkeypatching
-database.connection._ConfigSession -- get_config_session() (used by every
+database.connection._Session -- get_config_session() (used by every
 service module here) reads that name fresh on every call, so one patch
 covers app.work_distribution_service AND app.work_distribution_parameters_service
 (whose get_all() falls back to its own DEFAULTS when no row exists, so no
@@ -26,7 +26,7 @@ def _in_memory_session_factory():
 
 
 def _use_in_memory_db(monkeypatch):
-    monkeypatch.setattr("database.connection._ConfigSession", _in_memory_session_factory())
+    monkeypatch.setattr("database.connection._Session", _in_memory_session_factory())
 
 
 def _use_doj_map(monkeypatch, by_name: dict):

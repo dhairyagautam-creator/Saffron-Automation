@@ -198,7 +198,7 @@ def _in_memory_session_factory():
 
 
 def test_send_notification_batch_attaches_correct_files_and_logs(monkeypatch, tmp_path):
-    monkeypatch.setattr("database.connection._ConfigSession", _in_memory_session_factory())
+    monkeypatch.setattr("database.connection._Session", _in_memory_session_factory())
 
     sent = []
 
@@ -239,7 +239,7 @@ def test_send_notification_batch_attaches_correct_files_and_logs(monkeypatch, tm
 
 
 def test_send_notification_batch_records_failure_without_stopping_batch(monkeypatch, tmp_path):
-    monkeypatch.setattr("database.connection._ConfigSession", _in_memory_session_factory())
+    monkeypatch.setattr("database.connection._Session", _in_memory_session_factory())
     monkeypatch.setattr(notif, "get_settings", lambda: {"sender_email": "s@x.com", "app_password": "pw"})
     monkeypatch.setattr(notif, "open_smtp_connection", lambda sender_email, app_password: (object(), sender_email))
 

@@ -26,21 +26,20 @@ from loguru import logger
 from database.connection import get_config_session
 from database.models import AppSettings, CwhStock, InventoryReplenishment, InventoryThreshold
 
-_USER_ENVIRONMENT = "user"
 
 
 def _is_reset_already_completed(session) -> bool:
-    row = session.query(AppSettings).filter_by(environment=_USER_ENVIRONMENT).first()
+    row = session.query(AppSettings).first()
     return bool(row and row.inventory_data_reset_completed)
 
 
 def _mark_reset_completed(session) -> None:
-    row = session.query(AppSettings).filter_by(environment=_USER_ENVIRONMENT).first()
+    row = session.query(AppSettings).first()
     if row is None:
         # No app_settings row exists yet at all (a genuinely brand-new
         # install that hasn't reached the Settings page once) -- create
         # the GLOBAL user row rather than leaving nothing to mark.
-        row = AppSettings(environment=_USER_ENVIRONMENT)
+        row = AppSettings()
         session.add(row)
     row.inventory_data_reset_completed = 1
     session.commit()

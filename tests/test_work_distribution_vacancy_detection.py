@@ -85,7 +85,7 @@ def _isolated_db(monkeypatch):
         Base.metadata.create_all(engine)
         return sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-    monkeypatch.setattr("database.connection._ConfigSession", _factory())
+    monkeypatch.setattr("database.connection._Session", _factory())
     monkeypatch.setattr(wds, "load_doj_by_code", lambda: {})
     monkeypatch.setattr(wds, "load_doj_by_name", lambda: {})
     monkeypatch.setattr(wds, "find_by_employee_code", lambda code: None)

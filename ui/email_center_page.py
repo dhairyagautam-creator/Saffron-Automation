@@ -24,7 +24,6 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
-from app.feature_flags_service import is_feature_enabled
 from app.findings_service import get_notification_status_counts
 from app.send_state import get_progress, is_sending
 from app.session_state import get_active_import_id
@@ -97,14 +96,7 @@ class EmailCenterPage(ctk.CTkFrame):
             ("Sent", Color.SUCCESS),
             ("Failed", Color.ERROR),
         ]
-        # Hospital Suppression is experimental — its KPI only shows when the
-        # feature is on for the current mode (hidden from production).
-        self._hospital_kpi_shown = is_feature_enabled("hospital_suppression")
-        if self._hospital_kpi_shown:
-            kpi_specs.append(("Hospital Suppressed", Color.WARNING))
-        # Region Suppression (app/region_suppression.py) is a separate,
-        # always-on business rule -- unlike Hospital Suppression, its KPI is
-        # never hidden behind a feature flag.
+        kpi_specs.append(("Hospital Suppressed", Color.WARNING))
         kpi_specs.append(("Region Suppressed", Color.PRIMARY))
         kpi_specs += [
             ("Total Managers Emailed", Color.INFO),
@@ -238,8 +230,7 @@ class EmailCenterPage(ctk.CTkFrame):
         self.kpi_cards["Sending"].set_value(self._sending_kpi_text(sending_now))
         self.kpi_cards["Sent"].set_value(f"{len(sent_rows):,}")
         self.kpi_cards["Failed"].set_value(f"{len(failed_rows):,}")
-        if self._hospital_kpi_shown:
-            self.kpi_cards["Hospital Suppressed"].set_value(f"{notification_counts['Hospital Suppressed']:,}")
+        self.kpi_cards["Hospital Suppressed"].set_value(f"{notification_counts['Hospital Suppressed']:,}")
         self.kpi_cards["Region Suppressed"].set_value(f"{notification_counts['Suppressed - Region Rule']:,}")
         self.kpi_cards["Total Managers Emailed"].set_value(f"{len(managers_emailed):,}")
         self.kpi_cards["Total Employees Included"].set_value(f"{employees_included:,}")

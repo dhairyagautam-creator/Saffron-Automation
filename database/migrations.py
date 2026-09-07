@@ -249,88 +249,72 @@ def ensure_app_settings_geoapify_key_column() -> None:
     logger.info(f"Migration: added geoapify_api_key column to '{APP_SETTINGS_TABLE}'")
 
 
-def ensure_app_settings_environment_columns() -> None:
-    """Add the Developer Mode columns to app_settings (see
-    database/models.py, app/mode_state.py): `environment` so credentials can
-    be kept separate per mode, plus the global `dev_password_hash`/
-    `dev_password_salt` gate columns. The existing single row becomes the
-    'user' (production) environment, and a one-time copy of it is seeded as
-    the 'developer' environment so Developer Mode starts from the real
-    production baseline rather than blank."""
-    if not inspect(get_config_engine()).has_table(APP_SETTINGS_TABLE):
-        return
-    existing = _existing_columns(APP_SETTINGS_TABLE)
-    with get_config_engine().begin() as conn:
-        if "environment" not in existing:
-            # NOT NULL DEFAULT 'user' backfills every existing row as the
-            # production environment in the same statement.
-            conn.execute(text(f"ALTER TABLE {APP_SETTINGS_TABLE} ADD COLUMN environment TEXT NOT NULL DEFAULT 'user'"))
-        if "dev_password_hash" not in existing:
-            conn.execute(text(f"ALTER TABLE {APP_SETTINGS_TABLE} ADD COLUMN dev_password_hash TEXT"))
-        if "dev_password_salt" not in existing:
-            conn.execute(text(f"ALTER TABLE {APP_SETTINGS_TABLE} ADD COLUMN dev_password_salt TEXT"))
+def drop_developer_mode_schema() -> None:
+    """Collapse the per-environment Developer Mode schema back to one
+    environment: keep only the 'user' rows, drop `environment` and the
+    dev-password columns, and drop feature_flags outright.
 
-        # Seed a developer copy of the user row exactly once — only credential
-        # columns are copied; the global fields (setup_completed, dev
-        # password) are left at defaults on the developer row since they're
-        # only ever read from the user row.
-        dev_count = conn.execute(
-            text(f"SELECT COUNT(*) FROM {APP_SETTINGS_TABLE} WHERE environment = 'developer'")
-        ).scalar()
-        user_exists = conn.execute(
-            text(f"SELECT COUNT(*) FROM {APP_SETTINGS_TABLE} WHERE environment = 'user'")
-        ).scalar()
-        if not dev_count and user_exists:
-            conn.execute(
+    Developer Mode is gone, so a 'developer' row is unreachable data and the
+    columns scoping it are dead. Rebuilt rather than ALTER ... DROP COLUMN
+    because both tables carry a UNIQUE constraint over `environment`, which
+    SQLite refuses to drop a column out of.
+
+    The old table is RENAMED, not dropped, until the copy has succeeded:
+    pysqlite autocommits DDL, so a DROP would be irreversible the moment it
+    ran even though the surrounding transaction later failed. Rows go back
+    through the ORM's own insert so Python-side column defaults are applied
+    for any NOT NULL column the old table didn't have yet."""
+    from database.models import AppSettings, RuleParameter
+
+    engine = get_config_engine()
+
+    for model, table in ((AppSettings, APP_SETTINGS_TABLE), (RuleParameter, "rule_parameters")):
+        old_table = f"{table}_pre_devmode_removal"
+        # A leftover old table means a previous attempt died between the
+        # rename and the copy; finish from it rather than stranding the rows.
+        resuming = inspect(engine).has_table(old_table)
+        if not resuming:
+            if not inspect(engine).has_table(table):
+                continue
+            if "environment" not in _existing_columns(table):
+                continue  # already collapsed
+
+        keep = [c.name for c in model.__table__.columns if c.name in _existing_columns(old_table if resuming else table)]
+        # NOT NULL columns the old table never had (their defaults are
+        # Python-side, so a plain INSERT ... SELECT would violate NOT NULL).
+        defaults = {}
+        for column in model.__table__.columns:
+            if column.name in keep or column.nullable:
+                continue
+            value = getattr(column.default, "arg", None)
+            if value is not None and not callable(value):
+                defaults[column.name] = value
+
+        columns = keep + list(defaults)
+        selected = keep + [f":{name}__default" for name in defaults]
+        with engine.begin() as conn:
+            if resuming:
+                conn.execute(text(f"DELETE FROM {table}"))  # discard the partial copy
+            else:
+                conn.execute(text(f"ALTER TABLE {table} RENAME TO {old_table}"))
+                model.__table__.create(bind=conn)
+            copied = conn.execute(
                 text(
-                    f"INSERT INTO {APP_SETTINGS_TABLE} "
-                    "(environment, sender_gmail_address, gmail_app_password, automatic_email_enabled, "
-                    "master_email_address, geoapify_api_key, setup_completed, updated_at) "
-                    "SELECT 'developer', sender_gmail_address, gmail_app_password, automatic_email_enabled, "
-                    "master_email_address, geoapify_api_key, 0, updated_at "
-                    f"FROM {APP_SETTINGS_TABLE} WHERE environment = 'user'"
-                )
-            )
-            logger.info(f"Migration: seeded 'developer' environment copy in '{APP_SETTINGS_TABLE}'")
-    if "environment" not in existing:
-        logger.info(f"Migration: added environment + dev-password columns to '{APP_SETTINGS_TABLE}'")
-
-
-def ensure_rule_parameters_environment_column() -> None:
-    """Give rule_parameters an `environment` column so User Mode and
-    Developer Mode keep separate rule thresholds. SQLite can't alter a
-    table's UNIQUE constraint in place — the constraint has to change from
-    (rule_name, parameter_name) to (environment, rule_name, parameter_name)
-    — so the table is rebuilt: create the new-shape table, copy every
-    existing row in as the 'user' environment AND as a 'developer' copy
-    (dev starts from the production baseline), then swap it in."""
-    table = "rule_parameters"
-    if not inspect(get_config_engine()).has_table(table):
-        return
-    if "environment" in _existing_columns(table):
-        return
-    with get_config_engine().begin() as conn:
-        conn.execute(
-            text(
-                f"CREATE TABLE {table}_new ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "environment TEXT NOT NULL DEFAULT 'user', "
-                "rule_name TEXT NOT NULL, "
-                "parameter_name TEXT NOT NULL, "
-                "parameter_value TEXT NOT NULL, "
-                "UNIQUE(environment, rule_name, parameter_name))"
-            )
+                    f"INSERT INTO {table} ({', '.join(columns)}) "
+                    f"SELECT {', '.join(selected)} FROM {old_table} WHERE environment = 'user'"
+                ),
+                {f"{name}__default": value for name, value in defaults.items()},
+            ).rowcount
+            conn.execute(text(f"DROP TABLE {old_table}"))
+        logger.info(
+            f"Migration: collapsed '{table}' to a single environment "
+            f"({copied} 'user' row(s) kept, 'developer' row(s) discarded)"
         )
-        for env in ("user", "developer"):
-            conn.execute(
-                text(
-                    f"INSERT INTO {table}_new (environment, rule_name, parameter_name, parameter_value) "
-                    f"SELECT '{env}', rule_name, parameter_name, parameter_value FROM {table}"
-                )
-            )
-        conn.execute(text(f"DROP TABLE {table}"))
-        conn.execute(text(f"ALTER TABLE {table}_new RENAME TO {table}"))
-    logger.info(f"Migration: added environment column to '{table}' (rebuilt; existing rows kept as 'user' + copied to 'developer')")
+
+    if inspect(engine).has_table("feature_flags"):
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE feature_flags"))
+        logger.info("Migration: dropped 'feature_flags' (Developer Mode removed)")
 
 
 def ensure_payment_invoices_month_key_columns() -> None:
@@ -431,42 +415,6 @@ def ensure_inventory_new_sales_format_schema() -> None:
         "Report format and normalized branch/item matching (old data cleared -- re-upload the "
         "Previous Month Sales Report and Inventory Report)"
     )
-
-
-def ensure_hospital_suppression_enabled_in_user_mode() -> None:
-    """Promote Hospital Suppression to production. It shipped Developer-
-    Mode-only (the feature flag defaulted OFF in the 'user' environment)
-    while experimental; from v1.3 it is a standard, always-on stage of the
-    Validator notification pipeline (see app/feature_flags_service.py's
-    flipped default and app/notification_service.py). ensure_flag_defaults()
-    never overwrites an existing row, so the default change alone only
-    reaches brand-new installs -- this force-enables the flag for the 'user'
-    environment on every existing install too, creating the row if it's
-    missing. User-mode flags are never end-user-toggleable (they change only
-    via Publish), so enforcing this production invariant on startup is safe;
-    a developer can still toggle the separate 'developer'-environment flag
-    off for testing without affecting production."""
-    table = "feature_flags"
-    if not inspect(get_config_engine()).has_table(table):
-        return
-    with get_config_engine().begin() as conn:
-        row = conn.execute(
-            text(
-                "SELECT id, enabled FROM feature_flags "
-                "WHERE environment = 'user' AND flag_name = 'hospital_suppression'"
-            )
-        ).first()
-        if row is None:
-            conn.execute(
-                text(
-                    "INSERT INTO feature_flags (environment, flag_name, enabled) "
-                    "VALUES ('user', 'hospital_suppression', 1)"
-                )
-            )
-            logger.info("Migration: enabled hospital_suppression in user mode (row created)")
-        elif not row[1]:
-            conn.execute(text("UPDATE feature_flags SET enabled = 1 WHERE id = :id"), {"id": row[0]})
-            logger.info("Migration: promoted hospital_suppression to ON in user mode (production)")
 
 
 def drop_obsolete_employee_emails_table() -> None:
@@ -792,13 +740,11 @@ def run_startup_migrations() -> None:
     ensure_hospital_lookup_cache_coordinate_columns()
     ensure_app_settings_geoapify_key_column()
     ensure_app_settings_setup_completed_column()
-    ensure_app_settings_environment_columns()
-    ensure_rule_parameters_environment_column()
+    drop_developer_mode_schema()
     ensure_payment_invoices_month_key_columns()
     ensure_outstanding_invoices_bill_amount_month_columns()
     ensure_investigation_findings_division_column()
     ensure_inventory_new_sales_format_schema()
-    ensure_hospital_suppression_enabled_in_user_mode()
     ensure_investigation_findings_updated_at_column()
     ensure_email_notifications_updated_at_column()
     ensure_workbook_connections_updated_at_column()

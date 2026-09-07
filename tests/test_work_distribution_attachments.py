@@ -92,7 +92,7 @@ def _fake_find_by_designation(division, source_sheet, designation):
 @pytest.fixture(autouse=True)
 def _wire_fakes(monkeypatch):
     factory = _in_memory_session_factory()
-    monkeypatch.setattr("database.connection._ConfigSession", factory)
+    monkeypatch.setattr("database.connection._Session", factory)
 
     for mod in (wdns,):
         monkeypatch.setattr(mod, "find_by_employee_name", _fake_find_by_employee_name)

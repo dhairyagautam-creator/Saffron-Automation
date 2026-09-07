@@ -11,7 +11,7 @@ disagree about a given BM's eligibility.
 
 The in-memory database is wired in the same way as
 test_work_distribution_doj.py -- see that file's own docstring for why one
-monkeypatch of database.connection._ConfigSession covers every service
+monkeypatch of database.connection._Session covers every service
 module here (including each engine's own parameters service, whose
 get_all()/get_rbm_flag_tiers() fall back to DEFAULTS with no Settings
 row)."""
@@ -33,7 +33,7 @@ def _in_memory_session_factory():
 
 
 def _use_in_memory_db(monkeypatch):
-    monkeypatch.setattr("database.connection._ConfigSession", _in_memory_session_factory())
+    monkeypatch.setattr("database.connection._Session", _in_memory_session_factory())
 
 
 def _use_doj_map(monkeypatch, module, by_code: dict | None = None, by_name: dict | None = None):

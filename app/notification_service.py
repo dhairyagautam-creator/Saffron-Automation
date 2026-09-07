@@ -57,9 +57,7 @@ alike) and recorded as "Hospital Suppressed". Both are notification-only
 filters: a suppressed finding still stays in the Findings table and in
 Dashboard statistics exactly as flagged — only its automatic email is
 withheld. Neither changes what gets flagged. Hospital Suppression is a
-standard, always-on production stage as of v1.3 (its feature flag is forced
-on in User Mode — see app/feature_flags_service.py — and retained only so
-Developer Mode can toggle it off for A/B testing).
+standard, always-on production stage as of v1.3.
 
 All email content (HTML + plain text) is fully generated in memory before
 anything is sent, and sending reuses a single SMTP connection for the whole
@@ -78,7 +76,6 @@ from loguru import logger
 from sqlalchemy import inspect, text
 
 from app.email_template import concentration_sentence, occurrence_bullets, render_manager_email_html, render_manager_email_text
-from app.feature_flags_service import is_feature_enabled
 from app.geo_utils import haversine_km
 from app.findings_service import (
     get_all_findings,
@@ -663,52 +660,44 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
     # the whole workbook, never region-suppressed findings -- and only those
     # with a recorded cluster location (older findings predating cluster
     # capture don't have one and are treated as not-suppressed rather than
-    # blocking anything). Always on in production as of v1.3 (see
-    # app/feature_flags_service.py -- the user-mode flag is forced on); the
-    # feature flag is retained only so Developer Mode can toggle it off for
-    # A/B testing, which never affects production. Notification-only, exactly
+    # blocking anything). Always on in production as of v1.3.
+    # Notification-only, exactly
     # like Region Suppression: a hospital-suppressed finding stays on the
     # Findings page / Dashboard, recorded as "Hospital Suppressed" -- only
     # its automatic email is withheld.
-    hospital_enabled = is_feature_enabled("hospital_suppression")
-
     cluster_coords = {
         (item["finding"].cluster_lat, item["finding"].cluster_lon)
         for item in enriched
         if item["finding"].cluster_lat is not None and item["finding"].cluster_lon is not None
-    } if hospital_enabled else set()
+    }
 
-    if hospital_enabled:
-        progress_callback(
-            "hospital_suppression", label="Checking hospital suppression...", completed=0, total=len(cluster_coords)
-        )
-        with report.timed("Hospital suppression"):
-            if cluster_coords:
-                radius_meters = int(
-                    get_parameters("HOSPITAL_SUPPRESSION").get("radius_meters", DEFAULT_RADIUS_METERS)
-                )
-                hospital_by_coord = find_hospitals_many(
-                    list(cluster_coords),
-                    radius_meters=radius_meters,
-                    on_progress=lambda done, total: progress_callback(
-                        "hospital_suppression", completed=done, total=total
-                    ),
-                )
-            else:
-                hospital_by_coord = {}
-    else:
-        hospital_by_coord = {}
+    progress_callback(
+        "hospital_suppression", label="Checking hospital suppression...", completed=0, total=len(cluster_coords)
+    )
+    with report.timed("Hospital suppression"):
+        if cluster_coords:
+            radius_meters = int(
+                get_parameters("HOSPITAL_SUPPRESSION").get("radius_meters", DEFAULT_RADIUS_METERS)
+            )
+            hospital_by_coord = find_hospitals_many(
+                list(cluster_coords),
+                radius_meters=radius_meters,
+                on_progress=lambda done, total: progress_callback(
+                    "hospital_suppression", completed=done, total=total
+                ),
+            )
+        else:
+            hospital_by_coord = {}
 
     hospital_active_items = []
     suppressed_count = 0
     for item in enriched:
         finding = item["finding"]
 
-        if not hospital_enabled or finding.rule_name in HR_RULE_NAMES:
-            # Hospital Suppression toggled off (Developer Mode A/B test only;
-            # it is forced on in production) — or an HR finding, which has no
-            # cluster location to check and is a location-only concept anyway.
-            # Either way the finding stays active and routes to email as normal.
+        if finding.rule_name in HR_RULE_NAMES:
+            # An HR finding has no cluster location to check and is a
+            # location-only concept anyway, so it stays active and routes to
+            # email as normal.
             hospital_active_items.append(item)
             continue
 

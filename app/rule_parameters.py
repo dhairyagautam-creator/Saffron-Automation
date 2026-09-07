@@ -2,15 +2,10 @@
 
 Parameters live in the database (not in code) so a user can change a rule's
 behavior from the Parameters page without touching the codebase.
-
-Scoped by environment (User Mode vs Developer Mode — see app/mode_state.py):
-every read/write defaults to the CURRENT mode's environment, so tuning a
-threshold in Developer Mode never affects production until published.
 """
 
 from loguru import logger
 
-from app.mode_state import DEVELOPER_ENVIRONMENT, USER_ENVIRONMENT, current_environment
 from database.connection import get_config_session
 from database.models import RuleParameter
 
@@ -61,70 +56,62 @@ DEFAULT_PARAMETERS = {
 
 
 def ensure_defaults() -> None:
-    """Insert each rule's default parameters if they don't already exist —
-    for BOTH the 'user' and 'developer' environments, so a newly added
-    parameter shows up (at its default) in each mode without overwriting any
+    """Insert each rule's default parameters if they don't already exist, so a
+    newly added parameter shows up at its default without overwriting any
     value the user has already customized."""
     session = get_config_session()
     try:
-        for environment in (USER_ENVIRONMENT, DEVELOPER_ENVIRONMENT):
-            for rule_name, params in DEFAULT_PARAMETERS.items():
-                for parameter_name, default_value in params.items():
-                    exists = (
-                        session.query(RuleParameter)
-                        .filter_by(environment=environment, rule_name=rule_name, parameter_name=parameter_name)
-                        .first()
+        for rule_name, params in DEFAULT_PARAMETERS.items():
+            for parameter_name, default_value in params.items():
+                exists = (
+                    session.query(RuleParameter)
+                    .filter_by(rule_name=rule_name, parameter_name=parameter_name)
+                    .first()
+                )
+                if not exists:
+                    session.add(
+                        RuleParameter(
+                            rule_name=rule_name,
+                            parameter_name=parameter_name,
+                            parameter_value=default_value,
+                        )
                     )
-                    if not exists:
-                        session.add(
-                            RuleParameter(
-                                environment=environment,
-                                rule_name=rule_name,
-                                parameter_name=parameter_name,
-                                parameter_value=default_value,
-                            )
-                        )
-                        logger.info(
-                            f"Initialized default parameter {environment}.{rule_name}.{parameter_name} "
-                            f"= {default_value}"
-                        )
+                    logger.info(
+                        f"Initialized default parameter {rule_name}.{parameter_name} = {default_value}"
+                    )
         session.commit()
     finally:
         session.close()
 
 
-def get_parameters(rule_name: str, environment: str | None = None) -> dict:
-    """Return {parameter_name: parameter_value} for the given rule in the
-    given environment, defaulting to the current mode's environment."""
-    environment = environment or current_environment()
+def get_parameters(rule_name: str) -> dict:
+    """Return {parameter_name: parameter_value} for the given rule."""
     session = get_config_session()
     try:
-        rows = session.query(RuleParameter).filter_by(environment=environment, rule_name=rule_name).all()
+        rows = session.query(RuleParameter).filter_by(rule_name=rule_name).all()
         return {row.parameter_name: row.parameter_value for row in rows}
     finally:
         session.close()
 
 
-def set_parameter(rule_name: str, parameter_name: str, value: str, environment: str | None = None) -> None:
-    """Create or update a single parameter's value in the given environment
-    (defaults to the current mode's environment)."""
-    environment = environment or current_environment()
+def set_parameter(rule_name: str, parameter_name: str, value: str) -> None:
+    """Create or update a single parameter's value."""
     session = get_config_session()
     try:
         row = (
             session.query(RuleParameter)
-            .filter_by(environment=environment, rule_name=rule_name, parameter_name=parameter_name)
+            .filter_by(rule_name=rule_name, parameter_name=parameter_name)
             .first()
         )
         if row:
             row.parameter_value = value
         else:
             row = RuleParameter(
-                environment=environment, rule_name=rule_name, parameter_name=parameter_name, parameter_value=value
+                rule_name=rule_name, parameter_name=parameter_name, parameter_value=value
             )
             session.add(row)
         session.commit()
     finally:
         session.close()
 
-    logger.info(f"Saved parameter {environment}.{rule_name}.{parameter_name} = {value}")
+    logger.info(f"Saved parameter {rule_name}.{parameter_name} = {value}")

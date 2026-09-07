@@ -14,7 +14,6 @@ selecting a row in either tab reviews it through the same buttons.
 import customtkinter as ctk
 from loguru import logger
 
-from app.feature_flags_service import is_feature_enabled
 from app.findings_service import get_all_findings, parse_hours_worked_message, set_status
 from app.suppression_service import region_suppressed_finding_ids, suppressed_finding_ids_for_import
 from app.session_state import get_active_import_id
@@ -133,12 +132,6 @@ def _findings_row_style(row: dict) -> RowStyle | None:
 
 
 def _notification_status_display(finding) -> str:
-    # Hospital Suppression is an experimental feature — when it's off for the
-    # current mode, a finding must never read as "Hospital Suppressed"
-    # anywhere (e.g. stale data from a prior run in another mode); show it as
-    # Pending instead so the feature has zero footprint in User Mode.
-    if finding.notification_status == "Hospital Suppressed" and not is_feature_enabled("hospital_suppression"):
-        return "Pending"
     return NOTIFICATION_STATUS_DISPLAY.get(finding.notification_status, finding.notification_status)
 
 
@@ -470,7 +463,6 @@ class FindingsPage(ctk.CTkFrame):
         tree.tag_configure("suppression_inconclusive", background=Color.INFO_SOFT)
         tree.tag_configure("region_suppressed", background=Color.PRIMARY_SOFT)
 
-        hospital_enabled = is_feature_enabled("hospital_suppression")
         for finding in findings:
             # Region suppression is decided by the canonical LIVE rule (the
             # employee/date region, app.region_suppression.is_region_suppressed),
@@ -480,8 +472,8 @@ class FindingsPage(ctk.CTkFrame):
             # suppression still comes from the persisted status (it needs the
             # geocoding lookup that only runs at email time).
             is_region_suppressed = finding.finding_id in self._region_suppressed_ids
-            is_suppressed = hospital_enabled and not is_region_suppressed and finding.notification_status == "Hospital Suppressed"
-            is_inconclusive = hospital_enabled and not is_suppressed and not is_region_suppressed and bool(finding.suppression_reason)
+            is_suppressed = not is_region_suppressed and finding.notification_status == "Hospital Suppressed"
+            is_inconclusive = not is_suppressed and not is_region_suppressed and bool(finding.suppression_reason)
             if is_region_suppressed:
                 row_tag_name = "region_suppressed"
             elif is_suppressed:
@@ -645,7 +637,6 @@ class FindingsPage(ctk.CTkFrame):
             self.detail_container, notification_display, NOTIFICATION_BADGE_KIND.get(notification_display, "neutral")
         ).pack(anchor="w")
 
-        hospital_enabled = is_feature_enabled("hospital_suppression")
         if finding.finding_id in self._region_suppressed_ids:
             # Region Suppression (app/region_suppression.py) is decided by the
             # canonical live rule, so this block shows the moment the finding
@@ -661,7 +652,7 @@ class FindingsPage(ctk.CTkFrame):
                 anchor="w",
             ).pack(anchor="w", pady=(Spacing.MD, 0))
             field("Reason", finding.suppression_reason or "This employee's region is subject to the Region Suppression Rule.")
-        elif hospital_enabled and finding.notification_status == "Hospital Suppressed":
+        elif finding.notification_status == "Hospital Suppressed":
             ctk.CTkLabel(
                 self.detail_container,
                 text="Suppression Details",
@@ -679,7 +670,7 @@ class FindingsPage(ctk.CTkFrame):
                 field("Employee Cluster Coordinates", f"{finding.cluster_lat}, {finding.cluster_lon}")
             if finding.suppression_reason:
                 field("Reason", finding.suppression_reason)
-        elif hospital_enabled and finding.suppression_reason:
+        elif finding.suppression_reason:
             # Not suppressed, but the hospital check itself couldn't be
             # completed (lookup failure, or the batch's circuit breaker
             # skipped it) — see app.findings_service.note_suppression_check_issue.
