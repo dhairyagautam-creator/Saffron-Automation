@@ -804,6 +804,46 @@ def ensure_manager_work_allocation_records_pair_month_unique_index() -> None:
     logger.info(f"Migration: added UNIQUE(source_engine, emp_code, team_emp_code, month) index to '{table}'")
 
 
+def ensure_review_file_slots_sync_columns() -> None:
+    """Add uploaded_by/only_on_this_machine to review_file_slots for the
+    Review System sync slice (see database/models.py's ReviewFileSlot
+    docstring, docs/SYNC_DESIGN.md). Every existing row predates the
+    manifest entirely, so a slot that already has a file is, correctly,
+    "only on this machine" until it's re-uploaded through the normal path;
+    a slot with no file has nothing to flag."""
+    table = "review_file_slots"
+    if not inspect(get_config_engine()).has_table(table):
+        return
+    existing = _existing_columns(table)
+    added = False
+    with get_config_engine().begin() as conn:
+        if "uploaded_by" not in existing:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN uploaded_by TEXT"))
+            added = True
+        if "only_on_this_machine" not in existing:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN only_on_this_machine INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text(f"UPDATE {table} SET only_on_this_machine = 1 WHERE file_path IS NOT NULL"))
+            added = True
+    if added:
+        logger.info(f"Migration: added uploaded_by/only_on_this_machine columns to '{table}'")
+
+
+def ensure_review_system_sync_tables() -> None:
+    """Create sync_state/sync_module_check/profile_name_cache -- the
+    Review System sync slice's own local-only bookkeeping tables (see
+    database/models.py, docs/SYNC_DESIGN.md). init_db()'s
+    Base.metadata.create_all() already creates these on a brand-new
+    install; this covers every existing install that ran init_db() before
+    these models existed."""
+    from database.models import ProfileNameCache, SyncModuleCheck, SyncState
+
+    engine = get_config_engine()
+    for model in (SyncState, SyncModuleCheck, ProfileNameCache):
+        if not inspect(engine).has_table(model.__tablename__):
+            model.__table__.create(bind=engine)
+            logger.info(f"Migration: created '{model.__tablename__}' table")
+
+
 def ensure_work_distribution_doctors_bm_abm_code_columns() -> None:
     """Add bm_code/abm_code to work_distribution_doctors if they predate
     the 2026-08 BM/ABM Code fix (see WorkDistributionDoctor's own
@@ -1025,6 +1065,8 @@ def run_startup_migrations() -> None:
     ensure_manager_work_allocation_bm_details_reason_column()
     ensure_manager_work_allocation_records_month_sort_key_column()
     ensure_manager_work_allocation_records_pair_month_unique_index()
+    ensure_review_file_slots_sync_columns()
+    ensure_review_system_sync_tables()
     ensure_work_distribution_doctors_bm_abm_code_columns()
     ensure_work_distribution_findings_employee_code_column()
     ensure_app_settings_inventory_reset_column()

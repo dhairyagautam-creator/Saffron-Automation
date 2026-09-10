@@ -160,6 +160,71 @@ class ReviewFileSlot(Base):
     row_count = Column(Integer, nullable=True)
     column_count = Column(Integer, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
+    # Sync additions (see app/review_sync_service.py, docs/SYNC_DESIGN.md).
+    # uploaded_by is the uploader's profile uuid (as text) -- resolved to a
+    # display name at render via ProfileNameCache, never shown raw.
+    uploaded_by = Column(String, nullable=True)
+    # True if this slot's current local file has no corresponding row in
+    # sync_manifest at all (not "stale", not "hash differs" -- those are
+    # the pull banner's concern; this is "nobody else can see this file
+    # yet"). Set True the moment a local upload is stored (before the
+    # manifest insert succeeds), False the moment that insert succeeds, and
+    # updated during a successful manifest check for any slot whose
+    # slot_key doesn't appear in the manifest at all. Left UNCHANGED when a
+    # check fails/is offline -- never flipped by a guess.
+    only_on_this_machine = Column(Boolean, nullable=False, default=False)
+
+
+class SyncState(Base):
+    """Per (module, slot_key): what has actually been applied to THIS
+    machine from sync_manifest -- purely local bookkeeping, never synced,
+    not in any cloud schema (see docs/SYNC_DESIGN.md). applied_seq/
+    applied_sha256 are the manifest row this machine last successfully
+    downloaded, verified, and wrote locally for this slot; NULL until the
+    first successful pull. A failed download or hash mismatch must never
+    advance these -- see app/review_sync_service.py's per-slot apply loop."""
+
+    __tablename__ = "sync_state"
+    __table_args__ = (
+        UniqueConstraint("module", "slot_key", name="uq_sync_state_module_slot"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    module = Column(String, nullable=False)
+    slot_key = Column(String, nullable=False)
+    applied_seq = Column(Integer, nullable=True)
+    applied_sha256 = Column(String, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+
+
+class SyncModuleCheck(Base):
+    """Per module: bookkeeping for the last time this machine successfully
+    checked sync_manifest, purely to drive the offline staleness indicator
+    ("last checked ...") -- never synced. Updated only when a check
+    actually succeeds; left alone on a failed/offline check, same
+    last-known-state rule as ReviewFileSlot.only_on_this_machine."""
+
+    __tablename__ = "sync_module_check"
+
+    module = Column(String, primary_key=True)
+    last_checked_seq = Column(Integer, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+
+
+class ProfileNameCache(Base):
+    """Local cache of {profile id -> full_name}, refreshed opportunistically
+    whenever a manifest check succeeds (see public.get_profile_names() in
+    supabase/migrations/0023_sync_manifest.sql). Exists so uploaded_by can
+    render as a name rather than a uuid even when offline, and so the very
+    first check after a fresh install doesn't need a separate round trip
+    before any slot can show who uploaded it. Never synced -- this IS the
+    sync client's own cache, not a table anything reads back from the cloud."""
+
+    __tablename__ = "profile_name_cache"
+
+    id = Column(String, primary_key=True)  # profile uuid, as text
+    full_name = Column(String, nullable=True)
+    cached_at = Column(DateTime, nullable=True)
 
 
 class ReviewCoverageParameter(Base):

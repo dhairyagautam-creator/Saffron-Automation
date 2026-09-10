@@ -34,6 +34,8 @@ def _empty_state(slot_id: str) -> dict:
         "row_count": None,
         "column_count": None,
         "uploaded_at": None,
+        "uploaded_by": None,
+        "only_on_this_machine": False,
     }
 
 
@@ -48,6 +50,9 @@ def _row_to_state(row: ReviewFileSlot) -> dict:
         "row_count": row.row_count,
         "column_count": row.column_count,
         "uploaded_at": row.uploaded_at,
+        # Sync additions -- see app/review_sync_service.py, database/models.py.
+        "uploaded_by": row.uploaded_by,
+        "only_on_this_machine": bool(row.only_on_this_machine),
     }
 
 

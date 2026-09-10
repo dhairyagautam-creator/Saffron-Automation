@@ -13,6 +13,13 @@ CollapsibleSection for a group with multiple sources (Onyx/Guardians/
 Xandra) exactly like Work Distribution's own ABM/RBM role sections. Only
 the visual layout changed from the previous version -- the 12-slot
 structure, schemas, validation rules, and the readiness gate are untouched.
+
+Sync (see app/review_sync_service.py, docs/SYNC_DESIGN.md): the manifest
+check fires on module entry (on_show) and the explicit Refresh button --
+deliberately no timer, no background thread. A pending-changes banner is
+persistent (stays until Pull Updates is clicked, reappears on next entry
+if dismissed), never a toast. Nothing downloads until the button is
+clicked.
 """
 
 from pathlib import Path
@@ -22,14 +29,22 @@ import customtkinter as ctk
 from loguru import logger
 
 from app.excel_validation import SUPPORTED_EXTENSIONS
-from app.review_schemas import COVERAGE_SUMMARY, OPUS_SUMMARY, REVIEW_FILE_SLOTS
+from app.review_schemas import COVERAGE_SUMMARY, OPUS_SUMMARY, REVIEW_FILE_SLOTS, get_slot_def
+from app.review_sync_service import (
+    apply_pending_updates,
+    check_for_updates,
+    current_uploader_for_confirm,
+    display_name_for,
+    is_uploaded_by_someone_else,
+    upload_and_sync,
+)
 from app.review_upload_service import (
     get_all_slot_states,
     is_review_analysis_ready,
     readiness_counts,
     remove_review_file,
-    upload_review_file,
 )
+from database.connection import to_local
 from ui.background_task import run_in_background
 from ui.components import Card, CollapsibleSection, PrimaryButton, SecondaryButton, SectionHeader, StatusBadge
 from ui.icons import get_icon
@@ -52,6 +67,14 @@ def _grouped_slots():
     return grouped
 
 
+def _slot_label(slot_id: str) -> str:
+    """A human label for banner/error text -- "Secondary Sales (Onyx)" for
+    a grouped slot, "Annual Targets" for a standalone one (subcategory and
+    display_name are the same string there -- see app/review_schemas.py)."""
+    slot = get_slot_def(slot_id)
+    return f"{slot.subcategory} ({slot.display_name})" if slot.source_name else slot.subcategory
+
+
 class ReviewUploadsPage(ctk.CTkFrame):
     """Uploads + validation for the Review System's 12 required files."""
 
@@ -59,13 +82,31 @@ class ReviewUploadsPage(ctk.CTkFrame):
         super().__init__(master, fg_color=Color.SURFACE)
         self._slot_widgets: dict = {}
         self._busy_slots: set = set()
+        self._checking = False
+        self._banner_dismissed = False
+        self._last_check: dict | None = None  # most recent check_for_updates() result
 
         outer = ctk.CTkScrollableFrame(self, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=Spacing.LG, pady=Spacing.LG)
 
+        header_row = ctk.CTkFrame(outer, fg_color="transparent")
+        header_row.pack(fill="x", pady=(0, Spacing.LG))
         SectionHeader(
-            outer, "Uploads", "Upload and validate the 12 required Review System files"
-        ).pack(anchor="w", pady=(0, Spacing.LG))
+            header_row, "Uploads", "Upload and validate the 12 required Review System files"
+        ).pack(side="left", anchor="w")
+        self._refresh_button = SecondaryButton(
+            header_row, text="Refresh", image=get_icon("refresh", size=14, color=Color.PRIMARY),
+            command=self._on_refresh_clicked,
+        )
+        self._refresh_button.pack(side="right", anchor="n")
+
+        self._sync_status_label = ctk.CTkLabel(
+            outer, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED, anchor="w"
+        )
+        self._sync_status_label.pack(anchor="w", pady=(0, Spacing.SM))
+
+        self._banner_container = ctk.CTkFrame(outer, fg_color="transparent")
+        self._banner_container.pack(fill="x")
 
         self._readiness_card = Card(outer)
         self._readiness_card.pack(fill="x", pady=(0, Spacing.LG))
@@ -80,10 +121,153 @@ class ReviewUploadsPage(ctk.CTkFrame):
 
     def on_show(self) -> None:
         self._refresh_readiness()
-        all_states = get_all_slot_states()
-        for slot in REVIEW_FILE_SLOTS:
-            if slot.slot_id not in self._busy_slots:
-                self._apply_slot_state(slot.slot_id, all_states.get(slot.slot_id))
+        self._refresh_all_slot_rows()
+        self._run_check()
+
+    # --- Sync check (banner) ------------------------------------------------
+
+    def _on_refresh_clicked(self) -> None:
+        self._run_check()
+
+    def _run_check(self) -> None:
+        if self._checking:
+            return
+        self._checking = True
+        self._refresh_button.configure(state="disabled")
+
+        def work(_report_progress):
+            return check_for_updates()
+
+        def on_done(result, error):
+            self._checking = False
+            if self._refresh_button.winfo_exists():
+                self._refresh_button.configure(state="normal")
+            if error is not None:
+                logger.error(f"Review sync: check raised unexpectedly: {error!r}")
+                result = {"ok": False, "reason": "error"}
+
+            self._last_check = result
+            self._banner_dismissed = False
+            self._render_sync_status(result)
+            self._render_banner(result)
+            if result.get("ok"):
+                self._refresh_all_slot_rows()
+
+        run_in_background(self, work, on_done=on_done)
+
+    def _render_sync_status(self, result: dict) -> None:
+        if not self._sync_status_label.winfo_exists():
+            return
+        if not result.get("ok"):
+            reason = "Could not reach Supabase" if result.get("reason") == "offline" else "Last check failed"
+            self._sync_status_label.configure(text=f"⚠ {reason} -- showing this machine's last known state.")
+            return
+        filled = result["filled_count"]
+        total = result["total_count"]
+        self._sync_status_label.configure(text=f"Synced -- {filled} / {total} slots filled.")
+
+    # --- Banner --------------------------------------------------------------
+
+    def _clear_banner(self) -> None:
+        for widget in self._banner_container.winfo_children():
+            widget.destroy()
+
+    def _render_banner(self, result: dict) -> None:
+        self._clear_banner()
+        if self._banner_dismissed or not result.get("ok"):
+            return
+        changed = result.get("changed") or []
+        if not changed:
+            return
+
+        replacements = [c for c in changed if c["is_replacement"]]
+        first_fills = [c for c in changed if c["is_first_fill"]]
+
+        lines = []
+        for c in replacements:
+            lines.append(f"{_slot_label(c['slot_id'])} was replaced by {c['uploader_name']}.")
+        if first_fills:
+            lines.append(f"{len(first_fills)} new file{'s' if len(first_fills) != 1 else ''} available.")
+
+        banner = ctk.CTkFrame(self._banner_container, fg_color=Color.WARNING_SOFT, corner_radius=Radius.SM)
+        banner.pack(fill="x", pady=(0, Spacing.LG))
+        body = ctk.CTkFrame(banner, fg_color="transparent")
+        body.pack(fill="x", padx=Spacing.MD, pady=Spacing.SM)
+
+        text_col = ctk.CTkFrame(body, fg_color="transparent")
+        text_col.pack(side="left", fill="x", expand=True)
+        for line in lines:
+            ctk.CTkLabel(
+                text_col, text=f"⚠  {line}", font=Font.BODY, text_color=Color.WARNING, anchor="w",
+                wraplength=650, justify="left",
+            ).pack(anchor="w")
+
+        button_col = ctk.CTkFrame(body, fg_color="transparent")
+        button_col.pack(side="right")
+        PrimaryButton(
+            button_col, text="Pull Updates", command=lambda: self._on_pull_clicked(changed)
+        ).pack(side="left", padx=(0, Spacing.SM))
+        ctk.CTkButton(
+            button_col, text="✕", width=28, height=28, fg_color="transparent",
+            text_color=Color.WARNING, hover_color=Color.WARNING_SOFT,
+            command=self._on_dismiss_banner,
+        ).pack(side="left")
+
+    def _on_dismiss_banner(self) -> None:
+        self._banner_dismissed = True
+        self._clear_banner()
+
+    def _on_pull_clicked(self, changed: list[dict]) -> None:
+        was_ready = is_review_analysis_ready()
+        filled_before, _, total = readiness_counts()
+        slot_ids = [c["slot_id"] for c in changed]
+
+        self._clear_banner()
+        ctk.CTkLabel(
+            self._banner_container, text="Pulling updates...", font=Font.BODY, text_color=Color.INFO, anchor="w"
+        ).pack(anchor="w", pady=(0, Spacing.SM))
+
+        def work(_report_progress):
+            return apply_pending_updates(slot_ids)
+
+        def on_done(result, error):
+            self._clear_banner()
+            if error is not None:
+                logger.error(f"Review sync: apply raised unexpectedly: {error!r}")
+                messagebox.showerror("Sync Failed", f"Could not apply updates.\n\n{error}")
+                self._run_check()
+                return
+
+            self._refresh_readiness()
+            self._refresh_all_slot_rows()
+
+            problems = []
+            for f in result["failed"]:
+                problems.append(f"{_slot_label(f['slot_id'])}: {f['reason']}")
+            for v in result["version_blocked"]:
+                problems.append(
+                    f"{_slot_label(v['slot_id'])}: uploaded by a newer app version "
+                    f"({v['remote_version']}) than this one -- update the app to apply it."
+                )
+            if problems:
+                messagebox.showerror(
+                    "Some Updates Could Not Be Applied",
+                    "\n\n".join(problems) + "\n\nThese slots will show again next time you check.",
+                )
+
+            filled_after, _, _ = readiness_counts()
+            now_ready = is_review_analysis_ready()
+            if result["applied"] and not was_ready and now_ready:
+                messagebox.showinfo(
+                    "All Files Ready", f"All {total} slots are now filled -- analysis is ready to run."
+                )
+
+            # Re-check: a partial failure leaves the failed slots in
+            # `changed` again on the next check, so the banner persists for
+            # exactly those.
+            self._run_check()
+
+        run_in_background(self, work, on_done=on_done)
 
     # --- Readiness header ------------------------------------------------
 
@@ -122,6 +306,15 @@ class ReviewUploadsPage(ctk.CTkFrame):
             "ANALYSIS READY" if ready else "ANALYSIS LOCKED",
             "success" if ready else "warning",
         ).pack(anchor="w")
+
+        if uploaded < total:
+            states = get_all_slot_states()
+            missing = [s.slot_id for s in REVIEW_FILE_SLOTS if not states[s.slot_id]["uploaded"]]
+            missing_text = ", ".join(_slot_label(sid) for sid in missing)
+            ctk.CTkLabel(
+                body, text=f"Missing: {missing_text}", font=Font.SMALL, text_color=Color.TEXT_MUTED,
+                anchor="w", wraplength=650, justify="left",
+            ).pack(anchor="w", pady=(Spacing.SM, 0))
 
     # --- Slot tree ---------------------------------------------------------
 
@@ -190,17 +383,29 @@ class ReviewUploadsPage(ctk.CTkFrame):
         # Packed on demand in _apply_slot_state -- an empty error label
         # would still take up a blank line if always packed.
 
+        meta_label = ctk.CTkLabel(
+            row, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED, anchor="w", justify="left",
+        )
+        # Packed on demand -- uploader/timestamp + only-on-this-machine flag.
+
         self._slot_widgets[slot.slot_id] = {
             "slot": slot,
             "row": row,
             "status_line": status_line,
             "error_label": error_label,
+            "meta_label": meta_label,
             "upload_button": upload_button,
             "remove_button": remove_button,
         }
         self._apply_slot_state(slot.slot_id, initial_state)
 
     # --- Per-slot state rendering -------------------------------------------
+
+    def _refresh_all_slot_rows(self) -> None:
+        all_states = get_all_slot_states()
+        for slot in REVIEW_FILE_SLOTS:
+            if slot.slot_id not in self._busy_slots:
+                self._apply_slot_state(slot.slot_id, all_states.get(slot.slot_id))
 
     def _refresh_slot_row(self, slot_id: str) -> None:
         if slot_id in self._busy_slots:
@@ -219,6 +424,7 @@ class ReviewUploadsPage(ctk.CTkFrame):
 
         status_line = widgets["status_line"]
         error_label = widgets["error_label"]
+        meta_label = widgets["meta_label"]
         self._clear_status_line(status_line)
 
         if not state["uploaded"]:
@@ -227,6 +433,8 @@ class ReviewUploadsPage(ctk.CTkFrame):
             ).pack(side="left")
             error_label.pack_forget()
             error_label.configure(text="")
+            meta_label.pack_forget()
+            meta_label.configure(text="")
             widgets["remove_button"].configure(state="disabled")
             return
 
@@ -251,6 +459,22 @@ class ReviewUploadsPage(ctk.CTkFrame):
             error_label.configure(text="  •  ".join(state["errors"]) or "This file did not pass validation.")
             error_label.pack(fill="x", pady=(2, 0))
 
+        if state.get("only_on_this_machine"):
+            StatusBadge(status_line, "ONLY ON THIS MACHINE", "warning").pack(side="left", padx=(Spacing.SM, 0))
+
+        meta_parts = []
+        if state.get("uploaded_by"):
+            meta_parts.append(f"Uploaded by {display_name_for(state['uploaded_by'])}")
+        local_time = to_local(state.get("uploaded_at"))
+        if local_time:
+            meta_parts.append(local_time.strftime("%d %b %Y, %I:%M %p"))
+        if meta_parts:
+            meta_label.configure(text="  ·  ".join(meta_parts))
+            meta_label.pack(fill="x", pady=(2, 0))
+        else:
+            meta_label.pack_forget()
+            meta_label.configure(text="")
+
     def _set_validating(self, slot_id: str) -> None:
         widgets = self._slot_widgets.get(slot_id)
         if widgets is None:
@@ -260,6 +484,7 @@ class ReviewUploadsPage(ctk.CTkFrame):
             widgets["status_line"], text="Validating...", font=Font.BODY, text_color=Color.INFO, anchor="w"
         ).pack(side="left")
         widgets["error_label"].pack_forget()
+        widgets["meta_label"].pack_forget()
         widgets["upload_button"].configure(state="disabled")
 
     # --- Actions -------------------------------------------------------------
@@ -269,7 +494,16 @@ class ReviewUploadsPage(ctk.CTkFrame):
         slot = self._slot_widgets[slot_id]["slot"]
 
         if state and state["uploaded"]:
-            if not messagebox.askyesno(
+            if is_uploaded_by_someone_else(slot_id):
+                who_when = current_uploader_for_confirm(slot_id)
+                name, when = who_when if who_when else ("someone else", "an unknown time")
+                if not messagebox.askyesno(
+                    "Replace Someone Else's File",
+                    f"This slot's current file was uploaded by {name} on {when}.\n\n"
+                    "Uploading a new file will replace it for everyone. Continue?",
+                ):
+                    return
+            elif not messagebox.askyesno(
                 "Replace File",
                 f"Existing file:\n{state['filename']}\n\nReplace it with a new upload?",
             ):
@@ -301,7 +535,7 @@ class ReviewUploadsPage(ctk.CTkFrame):
         self._set_validating(slot_id)
 
         def work(_report_progress):
-            return upload_review_file(slot_id, file_path)
+            return upload_and_sync(slot_id, file_path)
 
         def on_done(result, error):
             self._busy_slots.discard(slot_id)
@@ -320,6 +554,8 @@ class ReviewUploadsPage(ctk.CTkFrame):
                     "File Invalid",
                     f"'{Path(file_path).name}' did not pass validation:\n\n" + "\n".join(f"• {e}" for e in result["errors"]),
                 )
+            if not result.get("synced"):
+                messagebox.showwarning("Not Synced", result.get("sync_error") or "This file was not synced to the cloud.")
 
         run_in_background(self, work, on_done=on_done)
 
