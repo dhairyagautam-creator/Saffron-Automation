@@ -11,15 +11,30 @@ Count table beside it. Both tables share the one detail panel on the right
 tab shows the same detail.
 """
 
+import threading
+
 import customtkinter as ctk
 from loguru import logger
 
 from app.findings_service import get_all_findings, parse_hours_worked_message
+from app.email_send_history_service import format_relative_time
+from app.notification_service import (
+    STATUS_SKIPPED_NO_DATA,
+    build_email_batch,
+    get_send_status_for_import,
+    send_all_emails,
+    send_button_state,
+)
+from app.permissions import can_send_emails
+from app.send_state import finish_sending, start_sending
 from app.suppression_service import region_suppressed_finding_ids, suppressed_finding_ids_for_import
 from app.session_state import get_active_import_id
 from app.table_export_service import RowStyle, default_export_filename, export_rows_with_ui
-from ui.components import Card, EmptyState, PrimaryButton, SectionHeader, StatusBadge, TabBar, styled_treeview
+from ui.components import (
+    Card, EmptyState, PrimaryButton, SectionHeader, SendEmailsButton, StatusBadge, TabBar, styled_treeview,
+)
 from ui.icons import get_icon
+from ui.send_emails_dialog import SendEmailsDialog
 from ui.theme import Color, Font, Spacing
 
 # Rules shown on the HR-Based Findings tab; everything else is Location-Based.
@@ -185,9 +200,13 @@ class FindingsPage(ctk.CTkFrame):
         outer = ctk.CTkFrame(self, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=Spacing.LG, pady=Spacing.LG)
 
+        header_row = ctk.CTkFrame(outer, fg_color="transparent")
+        header_row.pack(fill="x", pady=(0, Spacing.LG))
         SectionHeader(
-            outer, "Findings", "Review flagged employees from the investigation rule engine"
-        ).pack(anchor="w", pady=(0, Spacing.LG))
+            header_row, "Findings", "Review flagged employees from the investigation rule engine"
+        ).pack(side="left", anchor="w")
+        self.send_emails_button = SendEmailsButton(header_row, command=self._on_send_emails_clicked)
+        self.send_emails_button.pack(side="right", anchor="e")
 
         self.tabs = TabBar(
             outer, ["Location-Based Findings", "HR-Based Findings"], on_change=self._on_tab_changed
@@ -291,6 +310,13 @@ class FindingsPage(ctk.CTkFrame):
         self._load_findings()
 
     def _load_findings(self) -> None:
+        # Independent of the signature-based rebuild-skip below: a send
+        # whose drafts were ALL master-recipient (no resolvable RBM this
+        # run) advances has_sent_email_for_import() without changing any
+        # finding's own notification_status, so the button's own state must
+        # never be gated behind "did the findings table actually change."
+        self._refresh_send_emails_button()
+
         import_id = get_active_import_id()
         findings = get_all_findings(import_id)
 
@@ -321,6 +347,78 @@ class FindingsPage(ctk.CTkFrame):
         )
         self._render_table()
         self._render_hr_table()
+
+    # --- Send Emails ---------------------------------------------------------
+
+    def _refresh_send_emails_button(self) -> None:
+        if not can_send_emails("employee_module"):
+            self.send_emails_button.set_state(enabled=False, subtext="For authoritative users only.")
+            self.send_emails_button.set_status_line("")
+            return
+
+        import_id = get_active_import_id()
+        already_sent, last_send = (
+            get_send_status_for_import(import_id) if import_id is not None else (False, None)
+        )
+        state = send_button_state(has_active_import=import_id is not None, already_sent_for_import=already_sent)
+        if state == "no_data":
+            self.send_emails_button.set_state(enabled=False, subtext="No reports generated.")
+        else:
+            self.send_emails_button.set_state(enabled=True, subtext="")
+        self._render_send_status_line(last_send)
+
+    def _render_send_status_line(self, last_send: dict | None) -> None:
+        if last_send is None:
+            self.send_emails_button.set_status_line("")
+            return
+        self.send_emails_button.set_status_line(
+            f"Last sent {format_relative_time(last_send['sent_at'])} by {last_send['sent_by_name']}"
+        )
+
+    def _on_send_emails_clicked(self) -> None:
+        import_id = get_active_import_id()
+        # Defensive -- the button should already be disabled in either case;
+        # this only guards a stale click racing a state change.
+        if import_id is None or not can_send_emails("employee_module"):
+            return
+
+        self.send_emails_button.button.configure(state="disabled", text="Preparing...")
+
+        def worker() -> None:
+            drafts = build_email_batch(import_id)
+            self.after(0, self._on_batch_built, import_id, drafts)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_batch_built(self, import_id: int, drafts: list) -> None:
+        self.send_emails_button.button.configure(text="Send Emails")
+        self._refresh_send_emails_button()
+
+        routable = [d for d in drafts if d["status"] not in ("Unresolved", STATUS_SKIPPED_NO_DATA)]
+        already_sent, _ = get_send_status_for_import(import_id)
+        state = send_button_state(has_active_import=True, already_sent_for_import=already_sent)
+
+        SendEmailsDialog(
+            self.winfo_toplevel(),
+            state=state,
+            recipient_count=len(routable),
+            drafts=drafts,
+            send_fn=lambda d, progress_cb: self._send_and_track(import_id, d, progress_cb),
+            describe_failure_fn=lambda d: f"{d.get('manager_email', '?')}: {d.get('error_message', 'unknown error')}",
+            on_complete=lambda result: self._load_findings(),
+        )
+
+    def _send_and_track(self, import_id: int, drafts: list, progress_cb) -> dict:
+        # send_all_emails() doesn't call start_sending()/finish_sending()
+        # itself -- that's on the caller, so Email Center's live "Sending"
+        # KPI and its own auto-polling (app.send_state.is_sending()) still
+        # reflect a manually-triggered send correctly, not just the old
+        # automatic one.
+        start_sending(import_id)
+        try:
+            return send_all_emails(import_id, progress_callback=progress_cb, drafts=drafts)
+        finally:
+            finish_sending()
 
     # --- Location-Based tab ------------------------------------------------
 

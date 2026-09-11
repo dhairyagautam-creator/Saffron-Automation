@@ -64,9 +64,11 @@ from datetime import datetime
 
 from loguru import logger
 
+from app.email_send_history_service import get_last_send, record_send
 from app.inventory_email_recipients_service import get_all_recipients
 from app.inventory_email_settings_service import get_settings
 from app.inventory_send_state import update_progress
+from app.module_data_version_service import get_data_version
 from app.replenishment_service import (
     REPLENISHMENT_REPORT_COLUMNS,
     REPLENISHMENT_REPORT_HEADINGS,
@@ -77,7 +79,7 @@ from app.replenishment_service import (
 from app.smtp_service import open_smtp_connection, send_via_connection
 from app.table_export_service import RowStyle, default_export_filename, write_rows_to_excel
 from database.connection import get_config_session, utcnow
-from database.models import InventoryEmailNotification
+from database.models import InventoryEmailNotification, InventoryReplenishment
 
 # Same rationale as app.notification_service.COMMIT_EVERY_N_EMAILS: batched
 # commits so a disk fsync isn't paid per email, but the send log still
@@ -89,6 +91,8 @@ STATUS_DRAFT = "Draft"
 STATUS_SENT = "Sent"
 STATUS_FAILED = "Failed"
 STATUS_SKIPPED_NO_DATA = "Skipped - No Data"
+
+MODULE_KEY = "inventory_module"
 
 
 def _inventory_report_row_style(row: dict) -> RowStyle | None:
@@ -266,6 +270,7 @@ def send_report_batch(
                 except Exception as exc:
                     logger.error(f"Failed to send Inventory {report_type} report to {draft['recipient_email']}: {exc}")
                     draft["status"] = STATUS_FAILED
+                    draft["error_message"] = str(exc)
                     session.add(
                         InventoryEmailNotification(
                             report_type=report_type,
@@ -318,6 +323,13 @@ def send_report_batch(
         f"Inventory {report_type} report send complete: {sent_count} sent, {failed_count} failed, "
         f"{skipped_count} skipped (no data)"
     )
+
+    # Phase 2 of email authority: module-wide (any report type under
+    # Inventory counts as the same module for the shared history/button),
+    # recorded if at least one email actually went out this run.
+    if sent_count > 0:
+        record_send(MODULE_KEY, str(get_data_version(MODULE_KEY)))
+
     return {"sent_count": sent_count, "failed_count": failed_count, "skipped_count": skipped_count, "drafts": drafts}
 
 
@@ -337,14 +349,74 @@ def build_inventory_replenishment_email_batch(replenishment_rows: list[dict] | N
     return build_email_batch_for_report("Replenishment", replenishment_rows)
 
 
-def send_inventory_replenishment_emails(replenishment_rows: list[dict] | None = None, progress_callback=None) -> dict:
+def send_button_state(has_data: bool, changed_since_last_send: bool) -> str:
+    """Pure: the Automated Emails page's "Send Emails" button state --
+    "no_data" | "new_data" | "resend_confirm". Takes already-fetched
+    values, no DB access of its own (see replenishment_data_state()).
+
+    Phase 2 (see docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md):
+    `changed_since_last_send` now compares this machine's LOCAL
+    module_data_version counter (app.module_data_version_service,
+    bumped inside evaluate_replenishment() -- see that function's own
+    comment) against the shared email_send_history table's most recent
+    recorded data_version for this module -- accurate regardless of which
+    machine sent last, for the "who sent it" half. Known, accepted
+    limitation (not fixed here): the local counter itself is still a
+    per-machine value with no cross-machine meaning (see the Phase 2
+    report's own §6) -- documented, not blocking; the existing
+    resend-confirmation dialog is the accepted backstop."""
+    if not has_data:
+        return "no_data"
+    if changed_since_last_send:
+        return "new_data"
+    return "resend_confirm"
+
+
+def replenishment_data_state() -> tuple[bool, bool, dict | None]:
+    """(has_data, changed_since_last_send, last_send) for
+    send_button_state() above, plus the always-visible status line.
+    has_data: at least one inventory_replenishment row exists.
+    changed_since_last_send: this machine's current module_data_version
+    doesn't match the shared table's most recently recorded data_version
+    for this module (mismatch in EITHER direction counts as "changed" --
+    deliberately not a `>` comparison, since a different machine's
+    recorded version has no reliable ordering against this machine's own;
+    see send_button_state()'s own docstring). `last_send` is the shared
+    table's most recent row regardless of whether it matches -- for the
+    status line, which states a plain fact ("a send genuinely happened"),
+    independent of the changed/unchanged judgment call."""
+    session = get_config_session()
+    try:
+        has_data = session.query(InventoryReplenishment.branch_key).first() is not None
+    finally:
+        session.close()
+
+    if not has_data:
+        return False, False, None
+
+    current_version = get_data_version(MODULE_KEY)
+    last_send = get_last_send(MODULE_KEY)
+    changed = last_send is None or last_send["data_version"] != str(current_version)
+    return True, changed, last_send
+
+
+def send_inventory_replenishment_emails(
+    replenishment_rows: list[dict] | None = None, progress_callback=None, drafts: list[dict] | None = None
+) -> dict:
     """Thin Replenishment-specific wrapper over send_report_batch() above
     -- builds the batch, then sends it using Replenishment's own column
     shape (REPLENISHMENT_REPORT_COLUMNS/HEADINGS, imported from
     app.replenishment_service -- the exact same constants
     ui/inventory_replenishment_page.py's manual Export button uses) and
-    row highlight (_inventory_report_row_style)."""
-    drafts = build_inventory_replenishment_email_batch(replenishment_rows)
+    row highlight (_inventory_report_row_style).
+
+    `drafts`, if given, skips the build step and sends exactly what's
+    passed -- lets a caller (ui/inventory_automated_emails_page.py's Send
+    Emails button) build the batch once to get a recipient count for its
+    confirm popup, then send those same already-built drafts on confirm
+    instead of building a second time."""
+    if drafts is None:
+        drafts = build_inventory_replenishment_email_batch(replenishment_rows)
     return send_report_batch(
         drafts,
         REPLENISHMENT_REPORT_COLUMNS,

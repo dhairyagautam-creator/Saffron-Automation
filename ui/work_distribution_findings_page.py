@@ -42,8 +42,11 @@ Allocation finding) is what the Employee Details page uses to pick between
 the ABM detail view and the RBM detail view within that tab -- no separate
 sub-engine marker needed beyond what the finding already carries."""
 
+import threading
+
 import customtkinter as ctk
 
+from app.email_send_history_service import format_relative_time
 from app.manager_work_allocation_rbm_service import (
     FINDINGS_COLUMNS as RBM_COLUMNS,
     FINDINGS_HEADINGS as RBM_HEADINGS,
@@ -58,15 +61,25 @@ from app.manager_work_allocation_service import (
     get_current_cycle_label as get_mwa_cycle_label,
     has_data as mwa_has_data,
 )
+from app.permissions import can_send_emails
 from app.table_export_service import default_export_filename, export_rows_with_ui
+from app.work_distribution_notification_service import (
+    build_notification_batch,
+    send_button_state,
+    send_notification_batch,
+    upload_log_data_state,
+)
 from app.work_distribution_service import (
     FINDINGS_COLUMNS as COLUMNS,
     FINDINGS_HEADINGS as HEADINGS,
     get_all_findings,
     has_data,
 )
-from ui.components import Card, EmptyState, PrimaryButton, SecondaryButton, SectionHeader, TabBar, styled_treeview
+from ui.components import (
+    Card, EmptyState, PrimaryButton, SecondaryButton, SectionHeader, SendEmailsButton, TabBar, styled_treeview,
+)
 from ui.icons import get_icon
+from ui.send_emails_dialog import SendEmailsDialog
 from ui.theme import Color, Font, Spacing
 
 WIDTHS = {
@@ -132,6 +145,60 @@ class WorkDistributionFindingsPage(ctk.CTkFrame):
         self._render_mwa_table()
         self._rbm_all_rows = get_all_rbm_findings()
         self._render_rbm_table()
+        self._refresh_send_emails_button()
+
+    # --- Send Emails ---------------------------------------------------------
+
+    def _refresh_send_emails_button(self) -> None:
+        if not can_send_emails("work_distribution"):
+            self.send_emails_button.set_state(enabled=False, subtext="For authoritative users only.")
+            self.send_emails_button.set_status_line("")
+            return
+
+        has_data_, changed, last_send = upload_log_data_state()
+        state = send_button_state(has_data=has_data_, changed_since_last_send=changed)
+        if state == "no_data":
+            self.send_emails_button.set_state(enabled=False, subtext="No reports generated.")
+        else:
+            self.send_emails_button.set_state(enabled=True, subtext="")
+        self._render_send_status_line(last_send)
+
+    def _render_send_status_line(self, last_send: dict | None) -> None:
+        if last_send is None:
+            self.send_emails_button.set_status_line("")
+            return
+        self.send_emails_button.set_status_line(
+            f"Last sent {format_relative_time(last_send['sent_at'])} by {last_send['sent_by_name']}"
+        )
+
+    def _on_send_emails_clicked(self) -> None:
+        if not can_send_emails("work_distribution"):
+            return  # defensive -- button should already be disabled
+
+        self.send_emails_button.button.configure(state="disabled", text="Preparing...")
+
+        def worker() -> None:
+            drafts = build_notification_batch()
+            self.after(0, self._on_batch_built, drafts)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_batch_built(self, drafts: list) -> None:
+        self.send_emails_button.button.configure(text="Send Emails")
+        self._refresh_send_emails_button()
+
+        _, changed, _ = upload_log_data_state()
+        state = send_button_state(has_data=True, changed_since_last_send=changed)
+
+        SendEmailsDialog(
+            self.winfo_toplevel(),
+            state=state,
+            recipient_count=len(drafts),
+            drafts=drafts,
+            send_fn=lambda d, progress_cb: send_notification_batch(d, progress_callback=progress_cb),
+            describe_failure_fn=lambda d: f"{d.get('recipient_email', '?')}: {d.get('error_message', 'unknown error')}",
+            on_complete=lambda result: self.on_show(),
+        )
 
     def _build_widgets(self) -> None:
         outer = ctk.CTkFrame(self, fg_color="transparent")
@@ -139,7 +206,15 @@ class WorkDistributionFindingsPage(ctk.CTkFrame):
 
         SectionHeader(
             outer, "Findings", "Review doctor coverage findings for BMs and ABMs"
-        ).pack(anchor="w", pady=(0, Spacing.LG))
+        ).pack(anchor="w", pady=(0, Spacing.SM))
+
+        # Top-right, directly above the TabBar/View Employee Details row --
+        # module-wide (covers RGD Coverage + Manager Work Allocation
+        # together), not duplicated per tab the way View Employee Details is.
+        send_emails_row = ctk.CTkFrame(outer, fg_color="transparent")
+        send_emails_row.pack(fill="x", pady=(0, Spacing.SM))
+        self.send_emails_button = SendEmailsButton(send_emails_row, command=self._on_send_emails_clicked)
+        self.send_emails_button.pack(side="right", anchor="e")
 
         # TabBar (left) + a single shared "View Employee Details" button slot
         # (right) on the SAME line -- exactly one of the three buttons built

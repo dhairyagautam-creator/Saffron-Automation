@@ -19,16 +19,26 @@ there's nothing to mirror for the recipients half of this page. Instead:
   uses), and double-click on a row to view the full email body.
 """
 
+import threading
 from tkinter import messagebox
 
 import customtkinter as ctk
 
+from app.email_send_history_service import format_relative_time
 from app.inventory_email_recipients_service import (
     create_recipient,
     delete_recipient,
     get_all_recipients,
     update_recipient,
 )
+from app.inventory_notification_service import (
+    STATUS_SKIPPED_NO_DATA,
+    build_inventory_replenishment_email_batch,
+    replenishment_data_state,
+    send_button_state,
+    send_inventory_replenishment_emails,
+)
+from app.permissions import can_send_emails
 from app.table_export_service import default_export_filename, export_rows_with_ui
 from database.connection import get_config_session, to_local
 from database.models import InventoryEmailNotification
@@ -38,12 +48,14 @@ from ui.components import (
     PrimaryButton,
     SecondaryButton,
     SectionHeader,
+    SendEmailsButton,
     render_error_banner,
     render_success_banner,
     styled_treeview,
 )
 from ui.icons import get_icon
 from ui.inventory_email_recipient_dialog import RecipientFormDialog
+from ui.send_emails_dialog import SendEmailsDialog
 from ui.theme import Color, Font, Spacing
 from ui.user_dialogs import ConfirmDialog
 
@@ -95,11 +107,15 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
         outer = ctk.CTkScrollableFrame(self, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=Spacing.LG, pady=Spacing.LG)
 
+        header_row = ctk.CTkFrame(outer, fg_color="transparent")
+        header_row.pack(fill="x", pady=(0, Spacing.MD))
         SectionHeader(
-            outer,
+            header_row,
             "Automated Emails",
             "Configure who receives the Inventory Replenishment report, and by which divisions",
-        ).pack(anchor="w", pady=(0, Spacing.MD))
+        ).pack(side="left", anchor="w")
+        self.send_emails_button = SendEmailsButton(header_row, command=self._on_send_emails_clicked)
+        self.send_emails_button.pack(side="right", anchor="e")
 
         self._status_container = ctk.CTkFrame(outer, fg_color="transparent")
 
@@ -125,9 +141,8 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
             body,
             text=(
                 "Each configured recipient receives an Excel copy of the Replenishment report "
-                "filtered to only their selected divisions, automatically sent right after each "
-                "Inventory Report finishes processing (when Automatic Email Sending is enabled on "
-                "Settings). Double-click a recipient to edit them."
+                "filtered to only their selected divisions when Send Emails above is clicked. "
+                "Double-click a recipient to edit them."
             ),
             font=Font.BODY,
             text_color=Color.TEXT_SECONDARY,
@@ -174,6 +189,61 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
         """Called by InventoryModule whenever this page becomes visible."""
         self._render_recipients()
         self._render_log()
+        self._refresh_send_emails_button()
+
+    # --- Send Emails ---------------------------------------------------------
+
+    def _refresh_send_emails_button(self) -> None:
+        if not can_send_emails("inventory_module"):
+            self.send_emails_button.set_state(enabled=False, subtext="For authoritative users only.")
+            self.send_emails_button.set_status_line("")
+            return
+
+        has_data, changed, last_send = replenishment_data_state()
+        state = send_button_state(has_data=has_data, changed_since_last_send=changed)
+        if state == "no_data":
+            self.send_emails_button.set_state(enabled=False, subtext="No reports generated.")
+        else:
+            self.send_emails_button.set_state(enabled=True, subtext="")
+        self._render_send_status_line(last_send)
+
+    def _render_send_status_line(self, last_send: dict | None) -> None:
+        if last_send is None:
+            self.send_emails_button.set_status_line("")
+            return
+        self.send_emails_button.set_status_line(
+            f"Last sent {format_relative_time(last_send['sent_at'])} by {last_send['sent_by_name']}"
+        )
+
+    def _on_send_emails_clicked(self) -> None:
+        if not can_send_emails("inventory_module"):
+            return  # defensive -- button should already be disabled
+
+        self.send_emails_button.button.configure(state="disabled", text="Preparing...")
+
+        def worker() -> None:
+            drafts = build_inventory_replenishment_email_batch()
+            self.after(0, self._on_batch_built, drafts)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_batch_built(self, drafts: list) -> None:
+        self.send_emails_button.button.configure(text="Send Emails")
+        self._refresh_send_emails_button()
+
+        routable = [d for d in drafts if d["status"] != STATUS_SKIPPED_NO_DATA]
+        _, changed, _ = replenishment_data_state()
+        state = send_button_state(has_data=True, changed_since_last_send=changed)
+
+        SendEmailsDialog(
+            self.winfo_toplevel(),
+            state=state,
+            recipient_count=len(routable),
+            drafts=drafts,
+            send_fn=lambda d, progress_cb: send_inventory_replenishment_emails(progress_callback=progress_cb, drafts=d),
+            describe_failure_fn=lambda d: f"{d.get('recipient_email', '?')}: {d.get('error_message', 'unknown error')}",
+            on_complete=lambda result: self.on_show(),
+        )
 
     # --- Status banner -----------------------------------------------------
 

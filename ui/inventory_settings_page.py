@@ -494,28 +494,6 @@ class InventorySettingsPage(ctk.CTkFrame):
             anchor="w",
         ).pack(anchor="w", pady=(0, Spacing.MD))
 
-        self.email_automatic_switch = ctk.CTkSwitch(
-            body,
-            text="Enable Automatic Email Sending",
-            font=Font.BODY,
-            text_color=Color.TEXT_PRIMARY,
-            progress_color=Color.PRIMARY,
-        )
-        self.email_automatic_switch.pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(
-            body,
-            text=(
-                "When enabled, each configured recipient's Replenishment report is sent "
-                "automatically right after an Inventory Report finishes processing. When off, "
-                "recipients can still be configured here but no emails are sent automatically."
-            ),
-            font=Font.SMALL,
-            text_color=Color.TEXT_MUTED,
-            anchor="w",
-            wraplength=650,
-            justify="left",
-        ).pack(anchor="w", pady=(0, Spacing.MD))
-
         button_row = ctk.CTkFrame(body, fg_color="transparent")
         button_row.pack(fill="x", pady=(0, Spacing.SM))
 
@@ -542,17 +520,17 @@ class InventorySettingsPage(ctk.CTkFrame):
         self.email_sender_entry.insert(0, settings["sender_email"])
         self.email_password_entry.delete(0, "end")
         self.email_password_entry.insert(0, settings["app_password"])
-        if settings["automatic_sending_enabled"]:
-            self.email_automatic_switch.select()
-        else:
-            self.email_automatic_switch.deselect()
         self.email_settings_result_label.configure(text="")
 
     def _on_email_settings_save_clicked(self) -> None:
+        # Automatic sending no longer exists (Phase 1 email authority work --
+        # see ui/inventory_automated_emails_page.py's Send Emails button).
+        # automatic_sending_enabled is passed False and otherwise unread by
+        # anything; left in place rather than migrated away.
         save_email_settings(
             self.email_sender_entry.get().strip(),
             self.email_password_entry.get().strip(),
-            bool(self.email_automatic_switch.get()),
+            False,
         )
         self.email_settings_result_label.configure(text="Email settings saved successfully.", text_color=Color.SUCCESS)
 

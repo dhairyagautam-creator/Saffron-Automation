@@ -33,6 +33,36 @@ def can_access(module_key: str) -> bool:
     return module_key in profile.module_keys
 
 
+def email_authority_key(module_key: str) -> str:
+    """The user_module_permissions key that grants email-send authority for
+    `module_key` -- a free-form string in the same table as the module
+    grants themselves (see supabase/migrations/0020_module_based_permissions.sql),
+    not a separate column or table. Single source of truth for this format:
+    both can_send_emails() below and ui/user_dialogs.py's sub-checkbox
+    construct/parse it via this function rather than a duplicated f-string."""
+    return f"{module_key}:email_authority"
+
+
+def can_send_emails(module_key: str) -> bool:
+    """True if the signed-in user may trigger a manual email send for
+    `module_key` -- a super admin, unconditionally (same bypass as
+    can_access, and for the same reason: zero-maintenance access to a
+    sub-permission added after they were last granted anything), or a user
+    who holds both the module grant itself AND the email_authority_key
+    sub-grant. Re-checks can_access(module_key) here rather than trusting
+    that the sub-permission can never exist without it -- cascade
+    enforcement (parent required, revoked with it) is client-side only in
+    ui/user_dialogs.py, so this is a defensive backstop against the two
+    rows drifting apart, not redundant belt-and-suspenders for its own
+    sake."""
+    profile = rbac_state.current_profile()
+    if profile is None:
+        return False
+    if profile.is_super_admin:
+        return True
+    return can_access(module_key) and email_authority_key(module_key) in profile.module_keys
+
+
 def log_accessible_modules() -> None:
     """Logs which modules are enabled vs. restricted for the current user.
     Called once right after permission loading succeeds (see

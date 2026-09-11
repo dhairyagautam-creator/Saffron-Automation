@@ -90,6 +90,7 @@ from datetime import datetime
 from loguru import logger
 
 from app.doj_eligibility_service import NOT_YET_JOINED_LABEL
+from app.email_send_history_service import get_last_send, record_send
 from app.email_settings_service import get_settings
 from app.hierarchy_parser import find_by_designation, find_by_employee_code, find_by_employee_name
 from app.hierarchy_service import is_valid_recipient
@@ -106,6 +107,7 @@ from app.manager_work_allocation_service import (
     get_employee_bm_details as get_abm_employee_bm_details,
     get_employee_bm_monthly_history as get_abm_employee_bm_monthly_history,
 )
+from app.module_data_version_service import get_data_version
 from app.smtp_service import open_smtp_connection, send_via_connection
 from app.table_export_service import write_rows_to_excel
 from app.work_distribution_email_template import render_html, render_text
@@ -115,12 +117,14 @@ from app.work_distribution_service import (
     get_current_period_label,
     get_employee_doctors,
 )
-from database.connection import get_config_session, to_local, utcnow
+from database.connection import get_config_session, utcnow
 from database.models import ManagerWorkAllocationRecord, WorkDistributionDoctor, WorkDistributionEmailNotification
 
 STATUS_DRAFT = "Draft"
 STATUS_SENT = "Sent"
 STATUS_FAILED = "Failed"
+
+MODULE_KEY = "work_distribution"
 
 # Same rationale as app.inventory_notification_service.COMMIT_EVERY_N_EMAILS
 # -- batched commits so a disk fsync isn't paid per email, but the send log
@@ -644,6 +648,58 @@ def build_notification_batch() -> list:
 
 # --- Send ------------------------------------------------------------
 
+def send_button_state(has_data: bool, changed_since_last_send: bool) -> str:
+    """Pure: the module's "Send Emails" button state -- "no_data" |
+    "new_data" | "resend_confirm". Takes already-fetched values, no DB
+    access of its own (see upload_log_data_state()).
+
+    Phase 2 (see docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md):
+    `changed_since_last_send` now compares this machine's LOCAL
+    module_data_version counter against the shared email_send_history
+    table's most recent recorded data_version for this module --
+    accurate regardless of which machine sent last, for the "who sent
+    it" half. Known, accepted limitation (not fixed here): the local
+    counter itself is still a per-machine value with no cross-machine
+    meaning (see the Phase 2 report's own §6) -- documented, not
+    blocking; the existing resend-confirmation dialog is the accepted
+    backstop.
+
+    Also a Phase 1 correction, folded in here rather than as separate
+    work (per instruction): the local counter is bumped from
+    WorkDistributionFinding/ManagerWorkAllocationFinding's own
+    full-replace (app/work_distribution_service.py,
+    app/manager_work_allocation_service.py,
+    app/manager_work_allocation_rbm_service.py) -- i.e. when findings
+    actually recompute -- not from work_distribution_upload_log, which
+    the Phase 1 report found advances on a mere file browse, before Run
+    Analysis and before any finding changes at all."""
+    if not has_data:
+        return "no_data"
+    if changed_since_last_send:
+        return "new_data"
+    return "resend_confirm"
+
+
+def upload_log_data_state() -> tuple[bool, bool, dict | None]:
+    """(has_data, changed_since_last_send, last_send) for
+    send_button_state() above, plus the always-visible status line.
+    has_data: this module's data_version counter has been bumped at
+    least once (see module docstring's Phase 1 correction note --
+    the counter, not upload_log, is what "has data" means now).
+    changed_since_last_send: mismatch (either direction) between the
+    local counter and the shared table's most recently recorded
+    data_version for this module. `last_send` is that shared row
+    regardless of whether it matches -- for the status line, which
+    states a plain fact independent of the changed/unchanged judgment."""
+    current_version = get_data_version(MODULE_KEY)
+    if current_version == 0:
+        return False, False, None
+
+    last_send = get_last_send(MODULE_KEY)
+    changed = last_send is None or last_send["data_version"] != str(current_version)
+    return True, changed, last_send
+
+
 def send_notification_batch(drafts: list, progress_callback=None) -> dict:
     """Sends every draft from build_notification_batch() over ONE shared,
     reused SMTP connection (app.smtp_service.open_smtp_connection/
@@ -684,6 +740,7 @@ def send_notification_batch(drafts: list, progress_callback=None) -> dict:
             except Exception as exc:
                 logger.error(f"Failed to send Work Distribution notification to {draft['recipient_email']}: {exc}")
                 draft["status"] = STATUS_FAILED
+                draft["error_message"] = str(exc)
                 session.add(WorkDistributionEmailNotification(
                     recipient_name=draft["recipient_name"],
                     recipient_email=draft["recipient_email"],
@@ -725,28 +782,11 @@ def send_notification_batch(drafts: list, progress_callback=None) -> dict:
                 pass
 
     logger.info(f"Work Distribution notification send complete: {sent_count} sent, {failed_count} failed")
+
+    # Phase 2 of email authority: module-wide (covers both RGD Coverage and
+    # Manager Work Allocation), recorded if at least one email actually
+    # went out this run.
+    if sent_count > 0:
+        record_send(MODULE_KEY, str(get_data_version(MODULE_KEY)))
+
     return {"sent_count": sent_count, "failed_count": failed_count, "drafts": drafts}
-
-
-def get_recent_notifications(limit: int = 50) -> list:
-    """Recent send-log rows for the Email Center page's own log view, most
-    recent first."""
-    session = get_config_session()
-    try:
-        rows = session.query(WorkDistributionEmailNotification).order_by(
-            WorkDistributionEmailNotification.created_at.desc()
-        ).limit(limit).all()
-        return [
-            {
-                "recipient_name": r.recipient_name or "",
-                "recipient_email": r.recipient_email or "",
-                "sections": r.sections or "",
-                "employee_count": r.employee_count,
-                "subject": r.subject,
-                "status": r.status,
-                "created_at": to_local(r.created_at).strftime("%d %b %Y, %I:%M %p") if r.created_at else "",
-            }
-            for r in rows
-        ]
-    finally:
-        session.close()

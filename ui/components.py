@@ -258,6 +258,46 @@ class SecondaryButton(ctk.CTkButton):
         super().__init__(master, **kwargs)
 
 
+class SendEmailsButton(ctk.CTkFrame):
+    """The "Send Emails" button + small state text beneath it -- identical
+    in label, layout, and state text across all three email-authority
+    modules (Path Validator, Inventory, Work Distribution), so this is the
+    one widget each page's own header row embeds rather than three copies
+    of the same button+label pair. Owns only its own visual state -- the
+    caller decides WHEN to call set_state()/set_status_line() (on page
+    show, on refresh, after a send completes) and supplies the click
+    handler that drives ui.send_emails_dialog.SendEmailsDialog.
+
+    Two SEPARATE text elements, deliberately not one (Phase 2 of email
+    authority): `subtext` is the button's own enabled/disabled reason
+    ("No reports generated." / "For authoritative users only." / empty
+    when live) -- state-dependent, goes blank when the button is enabled.
+    `status_line` is always-visible ambient text ("Last sent 2h ago by
+    Priya") stating a plain fact from the shared send-history table,
+    independent of whether the button is enabled/disabled -- a disabled
+    button can still show a real prior send underneath it."""
+
+    def __init__(self, master, command, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.button = PrimaryButton(self, text="Send Emails", command=command, width=140)
+        self.button.pack(anchor="e")
+        self.subtext = ctk.CTkLabel(
+            self, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED, anchor="e",
+        )
+        self.subtext.pack(anchor="e", pady=(2, 0))
+        self.status_line = ctk.CTkLabel(
+            self, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED, anchor="e",
+        )
+        self.status_line.pack(anchor="e")
+
+    def set_state(self, *, enabled: bool, subtext: str = "") -> None:
+        self.button.configure(state="normal" if enabled else "disabled")
+        self.subtext.configure(text=subtext)
+
+    def set_status_line(self, text: str = "") -> None:
+        self.status_line.configure(text=text)
+
+
 class CollapsibleSection(ctk.CTkFrame):
     """A card with a clickable chevron+title header that shows/hides a body
     frame -- generalizes the collapsible-card pattern

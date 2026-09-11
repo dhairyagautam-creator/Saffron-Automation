@@ -30,17 +30,10 @@ for ABM, app.manager_work_allocation_rbm_service.process_rbm_report for
 RBM) in one click -- mirrors RGD Coverage's own Browse/Run Analysis
 workflow, just fanned out over two engines instead of one.
 
-Automatic Email Sending (see app.work_distribution_email_settings_service):
-when enabled from the Email Center's own switch, BOTH Run Analysis buttons
-(RGD Coverage and Manager Work Allocation) automatically build and send
-every currently flagged employee's notification right after their own
-analysis completes -- see _maybe_auto_send_notifications(), called at the
-end of each button's own on_done(). Mirrors ui/operations_page.py's own
-_start_automatic_send: no manual Preview/Send click, no confirmation
-dialog, since this IS the unsupervised automatic path the user explicitly
-opted into. When the switch is off (the default), nothing is ever sent
-from here -- the Email Center's manual Preview/Send controls are the only
-way to send.
+Emails are no longer sent automatically after either Run Analysis button --
+see ui/work_distribution_findings_page.py's "Send Emails" button, the only
+place app.work_distribution_notification_service.send_notification_batch is
+called from.
 """
 
 from pathlib import Path
@@ -55,8 +48,6 @@ from app.manager_work_allocation_parser import (
 )
 from app.manager_work_allocation_rbm_service import process_rbm_report
 from app.manager_work_allocation_service import process_manager_work_allocation_report
-from app.work_distribution_email_settings_service import is_automatic_sending_enabled
-from app.work_distribution_notification_service import build_notification_batch, send_notification_batch
 from app.work_distribution_parser import SUPPORTED_EXTENSIONS, parse_work_distribution_report
 from app.work_distribution_service import process_work_distribution_report
 from app.work_distribution_upload_log_service import record_upload
@@ -98,39 +89,6 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
 
     def on_show(self) -> None:
         pass
-
-    def _maybe_auto_send_notifications(self, status_label: ctk.CTkLabel) -> None:
-        """Called at the end of EITHER Run Analysis button's own on_done()
-        -- see module docstring. No-op if Automatic Email Sending is off
-        (the default)."""
-        if not is_automatic_sending_enabled():
-            return
-
-        base_text = status_label.cget("text")
-        status_label.configure(text=base_text + " Sending notifications automatically…")
-
-        def work(report_progress):
-            drafts = build_notification_batch()
-            if not drafts:
-                return {"sent_count": 0, "failed_count": 0, "drafts": []}
-            return send_notification_batch(drafts, progress_callback=report_progress)
-
-        def on_done(result, error):
-            if error is not None:
-                logger.error(f"Work Distribution automatic notification send failed: {error}")
-                status_label.configure(
-                    text=base_text + " Automatic notification send FAILED — see logs.", text_color=Color.ERROR,
-                )
-                return
-            status_label.configure(
-                text=(
-                    base_text + f" Automatic notifications: {result['sent_count']} sent, "
-                    f"{result['failed_count']} failed."
-                ),
-                text_color=Color.SUCCESS if result["failed_count"] == 0 else Color.WARNING,
-            )
-
-        run_in_background(self, work, on_done=on_done)
 
     def _build_widgets(self) -> None:
         outer = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -413,7 +371,6 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
                 text_color=Color.SUCCESS,
             )
             self.after(400, self.loading_overlay.hide)
-            self._maybe_auto_send_notifications(self.mwa_status_label)
 
             self._mwa_records = {role: {} for role in MWA_ROLES}
             for role in MWA_ROLES:
@@ -573,7 +530,6 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
                 text_color=Color.SUCCESS,
             )
             self.after(400, self.loading_overlay.hide)
-            self._maybe_auto_send_notifications(self.status_label)
 
             self._loaded_doctors = {}
             self._loaded_file_names = {}

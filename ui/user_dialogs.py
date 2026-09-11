@@ -23,9 +23,16 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from app import module_registry, user_validation
+from app.permissions import email_authority_key
 from app.user_management_service import UserRecord
 from ui.components import Card, PrimaryButton, SecondaryButton
 from ui.theme import Color, Font, Radius, Spacing
+
+# Modules that currently have a real send function to gate authority over.
+# Review System is excluded -- being redesigned first, wired in later with
+# no changes needed here. Payment Analytics and User Management are
+# excluded -- no send capability exists to grant authority over at all.
+_EMAIL_CAPABLE_MODULE_KEYS = frozenset({"employee_module", "inventory_module", "work_distribution"})
 
 
 def _center_on_parent(dialog, parent) -> None:
@@ -59,6 +66,8 @@ class UserFormDialog(ctk.CTkToplevel):
         self._is_edit = user is not None
         self._is_self = is_self
         self._module_vars: dict[str, ctk.BooleanVar] = {}
+        self._email_authority_vars: dict[str, ctk.BooleanVar] = {}
+        self._email_authority_checkboxes: dict[str, ctk.CTkCheckBox] = {}
 
         self.title("Edit User" if self._is_edit else "Add User")
         self.geometry("440x680" if not self._is_edit else "440x620")
@@ -129,9 +138,25 @@ class UserFormDialog(ctk.CTkToplevel):
         for module in module_registry.all_modules():
             var = ctk.BooleanVar(value=module.key in current_modules)
             self._module_vars[module.key] = var
-            checkbox = ctk.CTkCheckBox(modules_frame, text=module.title, variable=var)
+            is_email_capable = module.key in _EMAIL_CAPABLE_MODULE_KEYS
+            checkbox = ctk.CTkCheckBox(
+                modules_frame, text=module.title, variable=var,
+                command=(lambda k=module.key: self._apply_email_authority_lock(k)) if is_email_capable else None,
+            )
             checkbox.pack(anchor="w", pady=2, padx=Spacing.SM)
             self._module_checkboxes.append(checkbox)
+
+            if is_email_capable:
+                authority_key = email_authority_key(module.key)
+                authority_var = ctk.BooleanVar(value=authority_key in current_modules)
+                self._module_vars[authority_key] = authority_var
+                self._email_authority_vars[module.key] = authority_var
+                authority_checkbox = ctk.CTkCheckBox(
+                    modules_frame, text="Can send emails for this module", variable=authority_var,
+                )
+                authority_checkbox.pack(anchor="w", pady=(0, 4), padx=(Spacing.LG, Spacing.SM))
+                self._email_authority_checkboxes[module.key] = authority_checkbox
+
         self._apply_super_admin_lock()
 
         self._active_var = ctk.BooleanVar(value=True if self._is_self else (self._user.active if self._user else True))
@@ -161,10 +186,41 @@ class UserFormDialog(ctk.CTkToplevel):
         leaving them interactive would show a misleading "unchecked = no
         access" state that isn't true. Their checked/unchecked values are
         preserved underneath -- unticking Super Admin later restores
-        whatever selection was already there rather than resetting it."""
+        whatever selection was already there rather than resetting it.
+
+        Email-authority sub-checkboxes ride along: re-running
+        _apply_email_authority_lock() for every email-capable module after
+        the module checkboxes' own state is set means each sub-checkbox's
+        disabled/normal state (and, if its parent is unchecked, its forced-
+        False value) is always re-derived from the CURRENT combination of
+        Super Admin + that module's own checked state, not just blanket-
+        matched to whatever the module checkboxes just did."""
         state = "disabled" if self._super_admin_var.get() else "normal"
         for checkbox in self._module_checkboxes:
             checkbox.configure(state=state)
+        for module_key in _EMAIL_CAPABLE_MODULE_KEYS:
+            self._apply_email_authority_lock(module_key)
+
+    def _apply_email_authority_lock(self, module_key: str) -> None:
+        """Cascade lock for one email-capable module's sub-checkbox: while
+        Super Admin is checked, OR while this specific module's own
+        checkbox is unchecked, the sub-checkbox is disabled. Unlike Super
+        Admin's own lock on module checkboxes (value preserved underneath),
+        an unchecked PARENT MODULE also forces the sub-checkbox's value to
+        False -- "cannot exist without the parent grant; revoked with it"
+        is a real rule, not just a visual lock, so the value must not
+        survive being hidden behind a disabled checkbox only to silently
+        reappear if the parent is re-checked later without the user
+        consciously re-granting it. A Super-Admin-only disable (parent
+        still checked) does NOT force-clear the value, matching the module
+        checkboxes' own preserved-underneath behavior."""
+        checkbox = self._email_authority_checkboxes.get(module_key)
+        if checkbox is None:
+            return
+        parent_checked = self._module_vars[module_key].get()
+        if not parent_checked:
+            self._email_authority_vars[module_key].set(False)
+        checkbox.configure(state="disabled" if (self._super_admin_var.get() or not parent_checked) else "normal")
 
     def _labeled_entry(self, master, label: str, initial: str, show: Optional[str] = None) -> ctk.CTkEntry:
         ctk.CTkLabel(

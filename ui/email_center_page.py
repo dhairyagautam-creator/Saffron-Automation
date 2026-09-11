@@ -1,15 +1,14 @@
 """Email Center: monitoring page for the active session's manager
 notification emails, plus Master Email Recipients management.
 
-The monitoring half has no manual action — no Preview, no Send, no Send
-Selected, no Send All, no Draft workflow. The entire email workflow runs on
-its own right after Run Analysis finishes on the Operations page (see
-ui/operations_page.py and app/notification_service.py): the rule engine
-flags employees, the hierarchy resolves each one's manager, the email
-directory resolves that manager's address, flagged coordinates are
-reverse-geocoded, findings are grouped into one consolidated email per
-manager, and — if Automatic Email Sending is enabled on Settings — those
-emails are sent immediately using the saved Gmail credentials. That half
+The monitoring half has no manual action of its own — no Preview, no Send,
+no Send Selected, no Send All. Sending only ever happens from
+ui/findings_page.py's "Send Emails" button (see app/notification_service.py
+-- send_all_emails is called from nowhere else): the rule engine flags
+employees, the hierarchy resolves each one's manager, the email directory
+resolves that manager's address, flagged coordinates are reverse-geocoded,
+findings are grouped into one consolidated email per manager, and the click
+sends them using the saved Gmail credentials. This page's monitoring half
 only reports what happened: KPIs plus a send log with any errors.
 
 Master Email Recipients (ui/master_email_recipients_section.py) is packed
@@ -85,7 +84,7 @@ class EmailCenterPage(ctk.CTkFrame):
         SectionHeader(
             outer,
             "Email Center",
-            "Monitoring only — manager emails are generated and sent automatically after each analysis",
+            "Monitoring only — use Send Emails on the Findings page to notify managers",
         ).pack(anchor="w", pady=(0, Spacing.MD))
 
         kpi_row = ctk.CTkFrame(outer, fg_color="transparent")
@@ -240,15 +239,13 @@ class EmailCenterPage(ctk.CTkFrame):
         if sending_now:
             self.summary_label.configure(text="Sending manager emails now…")
         elif rows and not sent_rows and not failed_rows and draft_rows:
-            # Automatic Email Sending was off for this run (see the Settings
-            # page) -- these batches were fully generated but deliberately
-            # never sent, so "0 sent, 0 failed" alone would misleadingly
-            # read as if sending was attempted and silently did nothing.
+            # No code path writes new "Draft" rows any more (Phase 1 email
+            # authority work removed the old preview-without-sending flow
+            # entirely) -- this branch only still fires for draft rows left
+            # over from before that change. Kept rather than deleted so old
+            # history doesn't misleadingly read as "0 sent, 0 failed".
             self.summary_label.configure(
-                text=(
-                    f"{len(draft_rows):,} email draft(s) generated for review — Automatic Email Sending "
-                    "is off, so nothing has been sent."
-                )
+                text=f"{len(draft_rows):,} email draft(s) from before Send Emails existed — never sent."
             )
         elif rows:
             self.summary_label.configure(

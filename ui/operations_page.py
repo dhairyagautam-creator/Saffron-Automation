@@ -1,21 +1,19 @@
 """Operations page: import the daily call workbook and run the analysis pipeline.
 
 Only one workbook is ever "active" at a time (see app/session_state.py).
-Importing a new one replaces it — analysis, findings, and email generation
-only ever operate on the active session file. Previously imported files
-stay in the database but don't affect anything shown here. There is no
-manual "send" step anywhere in the app: if automatic sending is enabled
-(Settings page), manager emails go out on their own right after rule
-evaluation finishes, and results show up on the Email Center monitoring
-page with no further action needed.
+Importing a new one replaces it — analysis and findings only ever operate
+on the active session file. Previously imported files stay in the database
+but don't affect anything shown here. Manager emails are no longer sent
+automatically after analysis -- see ui/findings_page.py's "Send Emails"
+button, the only place app.notification_service.send_all_emails is called
+from.
 
 The Processing Progress Center below replaces a plain "frozen-looking"
 status line with a live progress bar per pipeline stage — binary stages
 (file selected, columns validated, workbook loaded, ...) jump from 0% to
-100%, item-based stages (hospital suppression, reverse geocoding, email
-generation, sending) show a live "N / M" count as
-app.notification_service's structured progress_callback reports each item
-completing.
+100%, item-based stages (hospital suppression, reverse geocoding) show a
+live "N / M" count as app.notification_service's structured
+progress_callback reports each item completing.
 """
 
 import threading
@@ -28,11 +26,8 @@ from loguru import logger
 
 from app.config import REQUIRED_COLUMNS
 from app.coordinates import parse_coordinates
-from app.email_settings_service import is_automatic_sending_enabled
 from app.findings_service import get_summary_counts
 from app.metrics import calculate_metrics
-from app.notification_service import preview_email_batch, send_all_emails
-from app.send_state import finish_sending, start_sending
 from app.session_state import get_active_import, set_active_import
 from app.timing import get_current_report, start_new_report
 from database.connection import get_session, to_local
@@ -57,31 +52,20 @@ HISTORY_HEADINGS = {
 }
 HISTORY_WIDTHS = {"file_name": 260, "imported_at": 150, "rows_imported": 90, "duplicates_removed": 130}
 
-# Each stage: (key, display label, kind, verb). "binary" stages just jump
-# 0% -> 100% (success) or show an error tint (fail); "count" stages show a
-# live "N / M <verb>" as items complete. Keys line up with the `stage`
-# strings app.notification_service.build_email_batch/send_all_emails pass
-# to progress_callback, so the two pre-analysis (browse-time) and three
-# analysis-time stages set below use their own local keys while the rest
-# are driven directly by that callback.
+# Each stage: (key, display label). Every stage here is binary -- jumps
+# 0% -> 100% (success) or shows an error tint (fail); there is no more
+# item-based "N / M" stage now that email generation/sending happen from
+# ui/findings_page.py's own Send Emails button, not from this pipeline.
 PIPELINE_STAGES = [
-    ("file_selected", "File Selected", "binary", None),
-    ("columns_validated", "Columns Validated", "binary", None),
-    ("workbook_loading", "Loading Workbook", "binary", None),
-    ("coordinate_parsing", "Parsing Employees", "binary", None),
-    ("data_saved", "Saving Data", "binary", None),
-    ("metrics_calculated", "Calculating Metrics", "binary", None),
-    ("validation_clustering", "Validating Calls", "binary", None),
-    ("hierarchy", "Resolving Hierarchy", "binary", None),
-    ("hospital_suppression", "Hospital Suppression", "count", "checked"),
-    ("geocoding", "Reverse Geocoding", "count", "completed"),
-    ("email_generation", "Generating Emails", "count", "completed"),
-    ("sending", "Sending Emails", "count", "sent"),
-    ("finalizing", "Finalizing", "binary", None),
+    ("file_selected", "File Selected"),
+    ("columns_validated", "Columns Validated"),
+    ("workbook_loading", "Loading Workbook"),
+    ("coordinate_parsing", "Parsing Employees"),
+    ("data_saved", "Saving Data"),
+    ("metrics_calculated", "Calculating Metrics"),
+    ("validation_clustering", "Validating Calls"),
+    ("finalizing", "Finalizing"),
 ]
-STAGE_ORDER = [key for key, *_ in PIPELINE_STAGES]
-STAGE_KIND = {key: kind for key, _, kind, _ in PIPELINE_STAGES}
-STAGE_VERB = {key: verb for key, _, _, verb in PIPELINE_STAGES}
 
 # The daily call export comes as one file per division -- each with
 # identical columns and its own correct "Division" value already in every
@@ -94,8 +78,7 @@ DIVISION_SLOTS = ["Xandra", "Onyx", "Guardians"]
 
 class ProgressRow(ctk.CTkFrame):
     """One pipeline stage: a label, a determinate progress bar, and a
-    trailing status/count. `state` is "pending"/"active"/"success"/"fail"
-    for binary stages; item-based stages instead call `set_progress`."""
+    trailing status. `state` is "pending"/"active"/"success"/"fail"."""
 
     def __init__(self, master, label: str) -> None:
         super().__init__(master, fg_color="transparent")
@@ -141,15 +124,6 @@ class ProgressRow(ctk.CTkFrame):
             self.label.configure(text_color=Color.ERROR)
             self.trailing.configure(text="Failed")
 
-    def set_progress(self, completed: int, total: int, verb: str) -> None:
-        fraction = (completed / total) if total else 0.0
-        done = total > 0 and completed >= total
-        self.state = "success" if done else "active"
-        self.bar.configure(progress_color=Color.SUCCESS if done else Color.PRIMARY)
-        self.bar.set(fraction)
-        self.label.configure(text_color=Color.TEXT_PRIMARY if done else Color.PRIMARY)
-        self.trailing.configure(text=f"{completed} / {total} {verb}")
-
 
 class OperationsPage(ctk.CTkFrame):
     """Select a daily workbook, validate/prepare it, then run the full
@@ -159,10 +133,7 @@ class OperationsPage(ctk.CTkFrame):
     def __init__(self, master) -> None:
         super().__init__(master, fg_color=Color.SURFACE)
 
-        # `_stage_order` drives both the rows and the retroactive-completion
-        # sweep, so they stay consistent.
         self._stages = list(PIPELINE_STAGES)
-        self._stage_order = [key for key, *_ in self._stages]
 
         self.progress_rows: dict[str, ProgressRow] = {}
         self.session_cards: dict[str, KPICard] = {}
@@ -285,7 +256,7 @@ class OperationsPage(ctk.CTkFrame):
             anchor="w",
         ).pack(anchor="w", pady=(0, Spacing.SM))
 
-        for key, label, _kind, _verb in self._stages:
+        for key, label in self._stages:
             row = ProgressRow(progress_body, label)
             row.pack(fill="x", pady=3)
             self.progress_rows[key] = row
@@ -347,43 +318,6 @@ class OperationsPage(ctk.CTkFrame):
         (browse-time) and analysis-time stages that aren't driven by
         notification_service's progress_callback."""
         self.progress_rows[key].set_binary(state)
-
-    def _apply_stage_update(self, stage: str, label: str | None = None, completed: int | None = None, total: int | None = None) -> None:
-        """Handle one progress_callback(stage, label, completed, total) call
-        from app.notification_service — used for every stage from "hierarchy"
-        onward.
-
-        Every stage strictly before this one gets swept and completed if it
-        isn't already — checked directly against each row's own state rather
-        than a separate "last completed index" counter. An earlier version
-        tracked that counter and advanced it to include the *current* stage
-        as soon as its own update arrived (before it had a chance to reach
-        "success"), which meant the very next call's sweep started one
-        stage too late and permanently skipped completing it — that's
-        exactly why "Resolving Hierarchy" got stuck at "active" forever
-        even though hierarchy resolution (and everything after it) had
-        genuinely finished. Re-checking state instead of a monotonic index
-        makes this self-correcting regardless of call order."""
-        if stage not in self.progress_rows:
-            return  # e.g. a hospital_suppression update in a mode where the row is hidden
-        idx = self._stage_order.index(stage)
-        for prior_key in self._stage_order[:idx]:
-            row = self.progress_rows[prior_key]
-            if row.state == "success":
-                continue
-            if STAGE_KIND[prior_key] == "binary":
-                row.set_binary("success")
-            else:
-                row.set_progress(1, 1, STAGE_VERB[prior_key])
-
-        row = self.progress_rows[stage]
-        if STAGE_KIND[stage] == "binary":
-            row.set_binary("success" if stage == "finalizing" else "active")
-        else:
-            row.set_progress(completed or 0, total or 0, STAGE_VERB[stage])
-
-        if label:
-            self.status_label.configure(text=label)
 
     def _refresh_session_summary(self) -> None:
         """Refresh the Active File / Records Loaded / Findings Generated /
@@ -660,12 +594,13 @@ class OperationsPage(ctk.CTkFrame):
                 return
 
             self._set_stage("validation_clustering", "success")
+            self._set_stage("finalizing", "success")
             total_findings = rule_stats["findings_count"] + hours_stats["findings_count"]
             summary_text = (
                 f"{metric_stats['total_visits']:,} visits processed, "
                 f"{metric_stats['total_employees']:,} employees analyzed, "
                 f"average distance {metric_stats['average_distance_km']:.1f} km. "
-                f"{total_findings:,} finding(s) generated."
+                f"{total_findings:,} finding(s) generated. Use Send Emails on the Findings page to notify managers."
             )
             self.status_label.configure(text=summary_text)
 
@@ -677,116 +612,6 @@ class OperationsPage(ctk.CTkFrame):
                 self.file_labels[division].configure(text="No file selected", text_color=Color.TEXT_MUTED)
             self._render_history()
             self._refresh_session_summary()
-
-            # Automatic sending involves real network calls (reverse
-            # geocoding + Gmail SMTP) that can take a long time. Analysis
-            # itself is already done at this point, so hand the sending off
-            # to a background thread instead of blocking the UI — this is
-            # what previously made the whole app look frozen/crashed on a
-            # real import once automatic sending was enabled.
-            if is_automatic_sending_enabled():
-                self._start_automatic_send(import_id, summary_text)
-            else:
-                self._start_preview_only(import_id, summary_text)
         finally:
             for button in self.browse_buttons.values():
                 button.configure(state="normal")
-
-    def _start_automatic_send(self, import_id: int, base_summary_text: str) -> None:
-        self.status_label.configure(text=base_summary_text + " Sending manager emails in the background…")
-        start_sending(import_id)
-
-        def report_progress(stage: str, label: str | None = None, completed: int | None = None, total: int | None = None) -> None:
-            def update() -> None:
-                if self.winfo_exists():
-                    self._apply_stage_update(stage, label=label, completed=completed, total=total)
-
-            self.after(0, update)
-
-        def worker() -> None:
-            try:
-                result = send_all_emails(import_id, progress_callback=report_progress)
-            except Exception as exc:
-                logger.error(f"Automatic email sending failed: {exc}")
-                self.after(0, lambda: self._on_automatic_send_done(import_id, base_summary_text, error=exc))
-            else:
-                self.after(0, lambda: self._on_automatic_send_done(import_id, base_summary_text, result=result))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _start_preview_only(self, import_id: int, base_summary_text: str) -> None:
-        """Automatic Email Sending is OFF -- build the exact same email
-        batch (hierarchy resolution, Hospital Suppression, Region
-        Suppression, reverse geocoding, draft generation) as a real send
-        would, so it shows up in the Email Center for review, but never
-        opens an SMTP connection or transmits anything. Still threaded
-        (reverse geocoding is a real network call) so the UI doesn't
-        block, same as _start_automatic_send."""
-        self.status_label.configure(text=base_summary_text + " Generating email previews in the background (Automatic Email Sending is off — nothing will be sent)…")
-
-        def report_progress(stage: str, label: str | None = None, completed: int | None = None, total: int | None = None) -> None:
-            def update() -> None:
-                if self.winfo_exists():
-                    self._apply_stage_update(stage, label=label, completed=completed, total=total)
-
-            self.after(0, update)
-
-        def worker() -> None:
-            try:
-                result = preview_email_batch(import_id, progress_callback=report_progress)
-            except Exception as exc:
-                logger.error(f"Email preview generation failed: {exc}")
-                self.after(0, lambda: self._on_preview_done(import_id, base_summary_text, error=exc))
-            else:
-                self.after(0, lambda: self._on_preview_done(import_id, base_summary_text, result=result))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_preview_done(
-        self, import_id: int, base_summary_text: str, result: dict | None = None, error: Exception | None = None
-    ) -> None:
-        still_active = get_active_import() is not None and get_active_import().id == import_id
-        if still_active:
-            if error is not None:
-                self._set_stage("finalizing", "fail")
-                self.status_label.configure(text=base_summary_text + f" Email preview generation failed: {error}")
-            else:
-                self._set_stage("finalizing", "success")
-                self.status_label.configure(
-                    text=(
-                        base_summary_text
-                        + f" {result['draft_count']:,} email draft(s) generated for review in the Email Center"
-                        + (f", {result['unresolved_count']:,} unresolved" if result["unresolved_count"] else "")
-                        + (f", {result['skipped_count']:,} master recipient(s) skipped (no data)" if result["skipped_count"] else "")
-                        + ". Automatic Email Sending is off — nothing was sent."
-                    )
-                )
-        self._render_history()
-        self._refresh_session_summary()
-
-    def _on_automatic_send_done(
-        self, import_id: int, base_summary_text: str, result: dict | None = None, error: Exception | None = None
-    ) -> None:
-        finish_sending()
-        # If the user has since imported a different file, this session is no
-        # longer active — don't overwrite the newer status message with stale
-        # info, but still refresh the history table and KPIs (always current).
-        still_active = get_active_import() is not None and get_active_import().id == import_id
-        if still_active:
-            if error is not None:
-                self._set_stage("finalizing", "fail")
-                self.status_label.configure(text=base_summary_text + f" Automatic email sending failed: {error}")
-            else:
-                self._set_stage("finalizing", "success")
-                self.status_label.configure(
-                    text=(
-                        base_summary_text
-                        + f" {result['sent_count']:,} manager email(s) sent automatically"
-                        + (f", {result['failed_count']:,} failed" if result["failed_count"] else "")
-                        + (f", {result['unresolved_count']:,} unresolved" if result["unresolved_count"] else "")
-                        + (f", {result['skipped_count']:,} master recipient(s) skipped (no data)" if result["skipped_count"] else "")
-                        + "."
-                    )
-                )
-        self._render_history()
-        self._refresh_session_summary()

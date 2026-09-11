@@ -89,6 +89,7 @@ from app.hierarchy_parser import find_by_employee_code, find_by_employee_name
 from app.hierarchy_service import is_valid_recipient
 from app.hospital_service import DEFAULT_RADIUS_METERS, find_hospitals_many, format_suppression_reason
 from app.hospital_service import round_coordinate as round_hospital_coordinate
+from app.email_send_history_service import get_last_send, record_send
 from app.master_email_recipients_service import division_matches, get_all_recipients as get_all_master_recipients
 from app.region_suppression import format_suppression_reason as format_region_suppression_reason
 from app.region_suppression import is_region_suppressed
@@ -99,6 +100,8 @@ from app.timing import PhaseTimer, get_current_report
 from database.connection import get_data_engine, get_session, utcnow
 from database.import_service import RAW_VISITS_TABLE
 from database.models import EmailNotification, ImportHistory, InvestigationFinding
+
+MODULE_KEY = "employee_module"
 
 # Emails are committed to the DB in small batches rather than one at a time
 # (fsync cost per commit isn't free) or all at the end (the Email Center's
@@ -983,80 +986,46 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
     return drafts
 
 
-def preview_email_batch(import_id: int, progress_callback=None) -> dict:
-    """Testing-safe counterpart to send_all_emails, used when Automatic
-    Email Sending is OFF (see app/email_settings_service.py). Runs the
-    exact same pipeline as build_email_batch -- hierarchy resolution,
-    Hospital Suppression, Region Suppression, reverse geocoding, HTML/text
-    generation -- and persists every draft to EmailNotification (status
-    "Draft", or "Unresolved" for findings that couldn't be routed) so they
-    appear in the Email Center exactly like a real batch would, and can be
-    opened for inspection via the existing double-click preview. The one
-    thing that never happens here is the actual SMTP send: no connection
-    is opened, no message is transmitted anywhere, and no finding's
-    `notification_status` is advanced to Sent -- only Hospital/Region
-    Suppression's own decisions (already applied inside
-    build_email_batch) are reflected, since those aren't about sending.
+def send_button_state(has_active_import: bool, already_sent_for_import: bool) -> str:
+    """Pure: the Findings page's "Send Emails" button state for Path
+    Validator -- "no_data" | "new_data" | "resend_confirm". Takes
+    already-fetched values, no DB access of its own, so it's testable with
+    fabricated data (see tests/test_notification_service.py).
 
-    This lets the complete pipeline be validated against real production
-    data with zero risk of actually emailing anyone, while still showing
-    exactly what would have been sent.
-
-    Returns a dict with `draft_count` (routable RBM/master drafts),
-    `unresolved_count`, `skipped_count` (a configured Master Email
-    recipient whose Division filter matched nothing this run -- see
-    STATUS_SKIPPED_NO_DATA), and `drafts`.
-    """
-    drafts = build_email_batch(import_id, progress_callback=progress_callback)
-
-    draft_count = 0
-    unresolved_count = 0
-    skipped_count = 0
-
-    session = get_session()
-    try:
-        for draft in drafts:
-            if draft["status"] == "Unresolved":
-                unresolved_count += 1
-            elif draft["status"] == STATUS_SKIPPED_NO_DATA:
-                skipped_count += 1
-            else:
-                draft_count += 1
-            session.add(
-                EmailNotification(
-                    import_id=import_id,
-                    manager_name=draft["manager_name"],
-                    manager_email=draft["manager_email"],
-                    subject=draft["subject"],
-                    body=draft["body"],
-                    finding_ids=draft["finding_ids"],
-                    status=draft["status"],
-                    created_at=utcnow(),
-                    updated_at=utcnow(),
-                )
-            )
-        session.commit()
-    finally:
-        session.close()
-
-    logger.info(
-        f"Email batch PREVIEW ONLY for import_id={import_id} (Automatic Email Sending is OFF): "
-        f"{draft_count} draft(s) generated, {unresolved_count} unresolved, {skipped_count} skipped "
-        "(no data) -- nothing was sent to any recipient."
-    )
-
-    if progress_callback:
-        progress_callback("finalizing", label="Completed (preview only — nothing sent).")
-
-    return {
-        "draft_count": draft_count,
-        "unresolved_count": unresolved_count,
-        "skipped_count": skipped_count,
-        "drafts": drafts,
-    }
+    Phase 2 (see docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md):
+    `already_sent_for_import` now comes from the shared
+    email_send_history table (see get_send_status_for_import() below),
+    not the local email_notifications table -- accurate regardless of
+    which machine sent last, for the "who sent it" half. Known, accepted
+    limitation (not fixed here): active_session.import_id is still a
+    local, per-machine autoincrement -- comparing it against another
+    machine's recorded import_id is only meaningful if both machines are
+    genuinely looking at the same data, which isn't guaranteed (see the
+    Phase 2 report's own §6). Documented, not blocking; the existing
+    resend-confirmation dialog is the accepted backstop."""
+    if not has_active_import:
+        return "no_data"
+    if not already_sent_for_import:
+        return "new_data"
+    return "resend_confirm"
 
 
-def send_all_emails(import_id: int, progress_callback=None) -> dict:
+def get_send_status_for_import(import_id: int) -> tuple[bool, dict | None]:
+    """(already_sent_for_this_exact_import, last_send) -- queries the
+    shared email_send_history table (Phase 2), not local
+    email_notifications. `last_send` is the module's most recent send
+    regardless of whether it matches `import_id` (for the always-visible
+    status line, which states a plain fact -- "a send genuinely
+    happened" -- independent of whether it applies to the CURRENT data);
+    `already_sent_for_this_exact_import` is specifically whether that
+    last send's data_version matches `import_id`, which is what
+    send_button_state() needs."""
+    last_send = get_last_send(MODULE_KEY)
+    already_sent = last_send is not None and last_send["data_version"] == str(import_id)
+    return already_sent, last_send
+
+
+def send_all_emails(import_id: int, progress_callback=None, drafts: list | None = None) -> dict:
     """Build the email batch (fully, in memory) and actually send each
     routable draft — one per affected RBM, plus one per configured Master
     Email recipient (see app/master_email_recipients_service.py) — via
@@ -1083,7 +1052,8 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
     progress_callback = progress_callback or (lambda stage, **kwargs: None)
     report = get_current_report()
 
-    drafts = build_email_batch(import_id, progress_callback=progress_callback)
+    if drafts is None:
+        drafts = build_email_batch(import_id, progress_callback=progress_callback)
 
     sent_count = 0
     failed_count = 0
@@ -1155,6 +1125,7 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
                     except Exception as exc:
                         logger.error(f"Failed to send email to {draft['manager_email']}: {exc}")
                         draft["status"] = "Failed"
+                        draft["error_message"] = str(exc)
                         session.add(
                             EmailNotification(
                                 import_id=import_id,
@@ -1236,6 +1207,15 @@ def send_all_emails(import_id: int, progress_callback=None) -> dict:
         f"{failed_count} failed, {unresolved_count} unresolved, {skipped_count} skipped (no data), "
         f"{suppressed_count} hospital-suppressed, {region_suppressed_count} region-suppressed"
     )
+
+    # Phase 2 of email authority: record in the shared history if at least
+    # one email actually went out this run -- a partial failure (some
+    # sent, some failed) still counts as "a send happened for this data
+    # version" for the shared table's purposes, matching how the local
+    # EmailNotification log already records every attempt regardless of
+    # overall success.
+    if sent_count > 0:
+        record_send(MODULE_KEY, str(import_id))
 
     progress_callback("finalizing", label="Completed.")
 

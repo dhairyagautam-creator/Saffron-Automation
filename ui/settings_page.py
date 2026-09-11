@@ -60,27 +60,6 @@ class SettingsPage(ctk.CTkFrame):
             anchor="w",
         ).pack(anchor="w", pady=(0, Spacing.MD))
 
-        self.automatic_switch = ctk.CTkSwitch(
-            body,
-            text="Enable Automatic Email Sending",
-            font=Font.BODY,
-            text_color=Color.TEXT_PRIMARY,
-            progress_color=Color.PRIMARY,
-        )
-        self.automatic_switch.pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(
-            body,
-            text=(
-                "When enabled, manager emails are sent automatically right after Run Analysis "
-                "finishes. When off, use Send All Emails on the Email Center page instead."
-            ),
-            font=Font.SMALL,
-            text_color=Color.TEXT_MUTED,
-            anchor="w",
-            wraplength=650,
-            justify="left",
-        ).pack(anchor="w", pady=(0, Spacing.MD))
-
         ctk.CTkLabel(
             body,
             text=(
@@ -165,10 +144,6 @@ class SettingsPage(ctk.CTkFrame):
         self.sender_entry.insert(0, settings["sender_email"])
         self.password_entry.delete(0, "end")
         self.password_entry.insert(0, settings["app_password"])
-        if settings["automatic_sending_enabled"]:
-            self.automatic_switch.select()
-        else:
-            self.automatic_switch.deselect()
         self.result_label.configure(text="")
 
         self.geoapify_key_entry.delete(0, "end")
@@ -176,10 +151,15 @@ class SettingsPage(ctk.CTkFrame):
         self.geoapify_result_label.configure(text="")
 
     def _on_save_clicked(self) -> None:
+        # Automatic sending no longer exists as a concept (Phase 1 email
+        # authority work -- see ui/findings_page.py's Send Emails button,
+        # the only place manager emails are ever sent from now). The
+        # automatic_sending_enabled column is passed False and otherwise
+        # unread by anything; left in place rather than migrated away.
         save_settings(
             self.sender_entry.get().strip(),
             self.password_entry.get().strip(),
-            bool(self.automatic_switch.get()),
+            False,
         )
         self.result_label.configure(text="Email settings saved successfully.", text_color=Color.SUCCESS)
 
