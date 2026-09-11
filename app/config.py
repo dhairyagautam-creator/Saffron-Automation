@@ -62,7 +62,20 @@ def _resolve_writable_data_dir(preferred: Path) -> Path:
     return preferred  # nothing usable; caller (main.py) checks DATA_DIR_ERROR before proceeding
 
 
-if getattr(sys, "frozen", False):
+_DATA_DIR_OVERRIDE = os.environ.get("SAFFRON_DATA_DIR")
+
+if _DATA_DIR_OVERRIDE:
+    # Manual multi-instance testing only (run two real `python main.py`
+    # processes side by side against completely separate data -- see
+    # sign_in_for_test_inventory_sync.py's docstring for the matching
+    # keyring-isolation half of this, SAFFRON_KEYRING_ACCOUNT in
+    # app/auth_service.py). Unset in every normal install; only DATA_DIR
+    # (and everything derived from it below) is redirected -- BASE_DIR/
+    # ASSETS_DIR still resolve from the source layout normally.
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    ASSETS_DIR = BASE_DIR / "assets"
+    DATA_DIR = Path(_DATA_DIR_OVERRIDE).resolve()
+elif getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
     ASSETS_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR)) / "assets"
     DATA_DIR = _resolve_writable_data_dir(Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Saffron Validator")
@@ -79,6 +92,11 @@ REPORTS_DIR = DATA_DIR / "reports"
 # Never committed (see .gitignore) -- only the file path + validation state
 # are ever recorded in the database.
 REVIEW_UPLOADS_DIR = DATA_DIR / "review_uploads"
+# Physical copies of the Inventory sync slice's two retained uploads
+# (Sales Report, Inventory Report) -- see app/inventory_upload_service.py.
+# Same convention as REVIEW_UPLOADS_DIR above: never committed (.gitignore),
+# only the file path + metadata are ever recorded in the database.
+INVENTORY_UPLOADS_DIR = DATA_DIR / "inventory_uploads"
 
 if DATA_DIR_ERROR is None:
     try:
@@ -86,6 +104,7 @@ if DATA_DIR_ERROR is None:
         DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         REVIEW_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        INVENTORY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         DATA_DIR_ERROR = f"Could not create application data folders under {DATA_DIR}: {exc!r}"
 
@@ -103,9 +122,17 @@ def _migrate_legacy_data_next_to_exe() -> None:
     checkpointed into the .db file. Copying only the .db would silently
     leave that data behind. A -wal paired with its .db is valid at any
     path, so SQLite replays it normally the first time the new location is
-    opened."""
-    if BASE_DIR == DATA_DIR:
-        return  # running from source; there is no "legacy" location
+    opened.
+
+    Also skipped under SAFFRON_DATA_DIR (see above) -- that override makes
+    BASE_DIR != DATA_DIR on purpose, for manual multi-instance testing on a
+    dev machine, which is NOT a frozen build upgrading from its old
+    next-to-the-exe location. Without this check, every fresh override
+    folder's first run would silently copy this machine's real database
+    (sitting at BASE_DIR/database/ in a source checkout) into the test
+    folder -- confirmed the hard way once; never again."""
+    if BASE_DIR == DATA_DIR or _DATA_DIR_OVERRIDE:
+        return  # running from source (or a deliberate test override); there is no "legacy" location
     legacy_db_dir = BASE_DIR / "database"
     if not legacy_db_dir.is_dir():
         return

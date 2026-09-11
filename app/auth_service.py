@@ -18,6 +18,7 @@ refresh token is a long-lived credential equivalent to a saved password.
 """
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -29,7 +30,13 @@ from supabase_auth.errors import AuthApiError, AuthError
 from app.supabase_client import get_supabase_client
 
 _KEYRING_SERVICE = "SaffronAutomationV2"
-_KEYRING_ACCOUNT = "supabase_session"
+# Overridable for manual multi-instance testing only (see
+# sign_in_for_test_inventory_sync.py, app/config.py's SAFFRON_DATA_DIR) --
+# two real `python main.py` processes signing in as two different accounts
+# would otherwise silently overwrite each other's session in this one fixed
+# slot. Unset in every normal install, where this is exactly the constant
+# it always was.
+_KEYRING_ACCOUNT = os.environ.get("SAFFRON_KEYRING_ACCOUNT", "supabase_session")
 
 _NETWORK_ERROR_MESSAGE = "Could not reach Supabase. Check your internet connection and try again."
 _TIMEOUT_ERROR_MESSAGE = "Supabase did not respond in time. Check your internet connection and try again."

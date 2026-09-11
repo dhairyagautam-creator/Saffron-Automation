@@ -43,6 +43,8 @@ cloud_cache/
 review_uploads/
 # Inventory sync slice's retained uploads (business data, never committed)
 inventory_uploads/
+# Manual two-identity test data dirs (see sign_in_for_test_inventory_sync.py)
+manual_test_data/
 # Built Windows installers
 installer_output/
 # Pre-reset database backups
