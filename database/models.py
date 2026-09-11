@@ -247,6 +247,42 @@ class ModuleDataVersion(Base):
     updated_at = Column(DateTime, nullable=True)
 
 
+class InventoryUploadSlot(Base):
+    """One row per Inventory Monitoring sync slot ("sales_report",
+    "inventory_report") -- mirrors ReviewFileSlot's shape/role (see that
+    class's docstring above) for app/inventory_sync_service.py, which
+    reuses the exact same generic sync_manifest table/sync-uploads bucket
+    (module="inventory") with no Supabase-side schema change at all.
+    The uploaded file itself lives under app.config.INVENTORY_UPLOADS_DIR,
+    never in git and never in this row -- only its path is recorded here.
+
+    Unlike ReviewFileSlot, an invalid upload is never stored here (see
+    app/inventory_upload_service.py's upload_and_sync) -- Inventory's
+    existing single-machine behavior already rejects an invalid file
+    outright with nothing retained, and this sync slice doesn't change
+    that; there is no per-slot INVALID state to track.
+
+    thresholds_generated_at is meaningful only on the "sales_report" row:
+    the last time app.threshold_service.generate_thresholds_from_sales()
+    actually ran against this machine's currently retained Sales Report --
+    whether triggered by uploading/pulling Sales directly, or by a later
+    Inventory Report action recomputing thresholds fresh from the still-
+    active Sales file (see docs/INVENTORY_SYNC_CONTEXT.md's recompute
+    rule). Shown on the Uploads page's status panel so a long-unchanged
+    Sales Report is visible, never silently assumed current."""
+
+    __tablename__ = "inventory_upload_slots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    slot_id = Column(String, nullable=False, unique=True)
+    filename = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    uploaded_by = Column(String, nullable=True)
+    only_on_this_machine = Column(Boolean, nullable=False, default=False)
+    thresholds_generated_at = Column(DateTime, nullable=True)
+
+
 class ReviewCoverageParameter(Base):
     """A single named setting for the Coverage Summary automated-email
     workflow (see app/review_coverage_email_settings_service.py) --

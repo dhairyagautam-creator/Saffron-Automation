@@ -41,6 +41,8 @@ reports/*.xlsx
 cloud_cache/
 # Review System uploaded workbooks (business data, never committed)
 review_uploads/
+# Inventory sync slice's retained uploads (business data, never committed)
+inventory_uploads/
 # Built Windows installers
 installer_output/
 # Pre-reset database backups

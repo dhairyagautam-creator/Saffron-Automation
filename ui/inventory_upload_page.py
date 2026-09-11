@@ -1,13 +1,22 @@
 """Inventory Upload page: the Inventory Report upload workflow, on its own
 page. Validated via app/excel_validation.py, then fed into
-app/replenishment_service.py to compare against the already-generated
-Threshold Database and identify which products need replenishment -- see
-that module's docstring for exactly what "evaluate replenishment" means
-(effective available stock, the comparison rule) and what it does NOT do
-yet (no notifications, no automatic replenishment).
+app/replenishment_service.py to compare against the Threshold Database and
+identify which products need replenishment -- see that module's docstring
+for exactly what "evaluate replenishment" means (effective available
+stock, the comparison rule) and what it does NOT do yet (no
+notifications, no automatic replenishment).
 
-Validation + replenishment evaluation both run on a background thread
-(see ui/background_task.py) behind a loading overlay
+Sync (see docs/SYNC_DESIGN.md, docs/INVENTORY_SYNC_CONTEXT.md): the upload
+now goes through app.inventory_sync_service.upload_and_sync(), which --
+via app.inventory_upload_service.apply_inventory_report() -- first
+recomputes thresholds fresh from whichever Sales Report is currently
+retained on this machine (never a standing cached value), then evaluates
+replenishment/CWH, then retains this Inventory Report locally and pushes
+it to the same manifest/Storage mechanism app/review_sync_service.py
+already proved. Local validation/evaluation logic itself is unchanged.
+
+Validation + threshold recompute + replenishment/CWH evaluation all run on
+a background thread (see ui/background_task.py) behind a loading overlay
 (ui/loading_overlay.py), so the window never looks frozen while a large
 workbook is processed.
 
@@ -15,19 +24,36 @@ Emails are no longer sent automatically after upload -- see
 ui/inventory_automated_emails_page.py's "Send Emails" button, the only
 place app.inventory_notification_service.send_inventory_replenishment_emails
 is called from.
+
+UI state after a sync pull (see docs/SYNC_DESIGN.md, ui/review_uploads_page.py's
+same pattern): refresh_from_state() renders this slot's CURRENTLY PERSISTED
+state (app.inventory_upload_service.get_slot_state), not "whatever this
+widget's own last upload happened to return" -- called after this page's
+own upload completes, after construction (so a restarted app immediately
+shows an already-retained file, not "No file selected"), and by
+ui/inventory_uploads_page.py after a pull applies this slot. A pulled file
+therefore renders identically to a locally uploaded one -- same filename,
+same green success text -- with no visual way to tell them apart, exactly
+matching Review System's own slot rendering.
+
+Remove button: local-only, byte-for-byte the same behavior as Review
+System's own per-slot Remove button (app.review_upload_service.
+remove_review_file) -- see app.inventory_upload_service.remove_inventory_file.
 """
 
 from pathlib import Path
 from tkinter import filedialog, messagebox
+from typing import Callable
 
 import customtkinter as ctk
 from loguru import logger
 
-from app.cwh_service import evaluate_cwh_stock
-from app.excel_validation import SUPPORTED_EXTENSIONS, validate_inventory_report
-from app.replenishment_service import evaluate_replenishment
+from app.excel_validation import SUPPORTED_EXTENSIONS
+from app.inventory_sync_service import upload_and_sync
+from app.inventory_upload_service import INVENTORY_REPORT_SLOT, get_slot_state, remove_inventory_file
+from app.replenishment_service import get_replenishment_summary
 from ui.background_task import run_in_background
-from ui.components import Card, PrimaryButton, SectionHeader
+from ui.components import Card, PrimaryButton, SecondaryButton, SectionHeader
 from ui.icons import get_icon
 from ui.loading_overlay import LoadingOverlay
 from ui.theme import Color, Font, Spacing
@@ -36,12 +62,14 @@ from ui.theme import Color, Font, Spacing
 class InventoryUploadPage(ctk.CTkFrame):
     """Upload workflow for the current inventory report."""
 
-    def __init__(self, master) -> None:
+    def __init__(self, master, on_uploaded: Callable[[], None] | None = None) -> None:
         super().__init__(master, fg_color=Color.SURFACE)
         self._inventory_report_path: str | None = None
         self._loaded_df = None
+        self._on_uploaded = on_uploaded
         self._build_widgets()
         self.loading_overlay = LoadingOverlay(self)
+        self.refresh_from_state()
 
     def _build_widgets(self) -> None:
         outer = ctk.CTkFrame(self, fg_color="transparent")
@@ -84,12 +112,54 @@ class InventoryUploadPage(ctk.CTkFrame):
         self.file_label = ctk.CTkLabel(
             action_row, text="No file selected", font=Font.BODY, text_color=Color.TEXT_MUTED, anchor="w"
         )
-        self.file_label.pack(side="left", padx=(Spacing.MD, 0))
+        self.file_label.pack(side="left", padx=(Spacing.MD, 0), fill="x", expand=True)
+
+        self.remove_button = SecondaryButton(
+            action_row, text="Remove", width=80, height=28, font=Font.SMALL_BOLD, state="disabled",
+            text_color=Color.ERROR, border_color=Color.ERROR,
+            command=self._on_remove_clicked,
+        )
+        self.remove_button.pack(side="right")
 
         self.status_label = ctk.CTkLabel(
             body, text="", font=Font.SMALL_BOLD, text_color=Color.TEXT_SECONDARY, anchor="w"
         )
         self.status_label.pack(anchor="w", pady=(Spacing.SM, 0))
+
+    def refresh_from_state(self) -> None:
+        """Renders this slot's CURRENTLY PERSISTED state -- see module
+        docstring. Safe to call any time (construction, after this page's
+        own upload, or from ui/inventory_uploads_page.py after a pull)."""
+        state = get_slot_state(INVENTORY_REPORT_SLOT)
+        if not state["uploaded"]:
+            self.file_label.configure(text="No file selected", text_color=Color.TEXT_MUTED)
+            self.status_label.configure(text="", text_color=Color.TEXT_SECONDARY)
+            self.remove_button.configure(state="disabled")
+            return
+
+        self.file_label.configure(text=state["filename"], text_color=Color.TEXT_PRIMARY)
+        summary = get_replenishment_summary()
+        self.status_label.configure(
+            text=(
+                "Inventory Report validated successfully. "
+                f"{summary['total_evaluated']} product(s) evaluated, "
+                f"{summary['requiring_replenishment']} requiring replenishment."
+            ),
+            text_color=Color.SUCCESS,
+        )
+        self.remove_button.configure(state="normal")
+
+    def _on_remove_clicked(self) -> None:
+        state = get_slot_state(INVENTORY_REPORT_SLOT)
+        filename = state.get("filename") or "this file"
+        if not messagebox.askyesno("Remove File", f"Remove '{filename}' from this slot?"):
+            return
+        remove_inventory_file(INVENTORY_REPORT_SLOT)
+        self._inventory_report_path = None
+        self._loaded_df = None
+        self.refresh_from_state()
+        if self._on_uploaded:
+            self._on_uploaded()
 
     def _on_browse_clicked(self) -> None:
         self.status_label.configure(text="", text_color=Color.TEXT_SECONDARY)
@@ -123,35 +193,17 @@ class InventoryUploadPage(ctk.CTkFrame):
         self.loading_overlay.show()
 
         def work(report_progress):
-            # Rescale the engine's own 0-100 progress into 0-80, leaving
-            # room for the replenishment-evaluation phase that follows
-            # within this same overall progress bar.
-            def load_progress(percent, message):
-                report_progress(percent * 0.8, message)
-
-            load_result = validate_inventory_report(file_path, progress_callback=load_progress)
-            if not load_result["success"] or load_result["error"] is not None:
-                return {"load": load_result, "replenishment_stats": None}
-
+            report_progress(20, "Validating...")
+            result = upload_and_sync(INVENTORY_REPORT_SLOT, file_path)
             report_progress(85, "Evaluating replenishment...")
-            replenishment_stats = evaluate_replenishment(load_result["df"])
-            # Additive only -- captures Ahmedabad CWH's own physical stock
-            # (app/cwh_service.py) from the exact rows evaluate_replenishment()
-            # just excluded, for the separate Central Warehouse page. Guarded
-            # so a bug here can never break the existing replenishment result
-            # the user is waiting on.
-            try:
-                evaluate_cwh_stock(load_result["df"])
-            except Exception as exc:
-                logger.error(f"Failed to evaluate Ahmedabad CWH stock: {exc}")
-            report_progress(98, "Finalizing...")
+            report_progress(98, "Syncing...")
             report_progress(100, "Done")
-            return {"load": load_result, "replenishment_stats": replenishment_stats}
+            return result
 
         def on_progress(percent, message):
             self.loading_overlay.update_progress(percent, message)
 
-        def on_done(work_result, error):
+        def on_done(result, error):
             self.browse_button.configure(state="normal")
 
             if error is not None:
@@ -159,8 +211,6 @@ class InventoryUploadPage(ctk.CTkFrame):
                 self.loading_overlay.hide()
                 messagebox.showerror("Import Failed", f"Could not open the selected file.\n\n{error}")
                 return
-
-            result = work_result["load"]
 
             if result["error"] is not None:
                 logger.error(f"Failed to load Inventory Report '{file_path}': {result['error']}")
@@ -186,15 +236,11 @@ class InventoryUploadPage(ctk.CTkFrame):
 
             self._inventory_report_path = file_path
             self._loaded_df = result["df"]
-            self.file_label.configure(text=Path(file_path).name, text_color=Color.TEXT_PRIMARY)
-
-            stats = work_result["replenishment_stats"]
-            summary_text = (
-                "Inventory Report validated successfully. "
-                f"{stats['evaluated']} product(s) evaluated, "
-                f"{stats['replenishment_required']} requiring replenishment."
-            )
-            self.status_label.configure(text=summary_text, text_color=Color.SUCCESS)
+            self.refresh_from_state()
+            if not result.get("synced"):
+                messagebox.showwarning("Not Synced", result.get("sync_error") or "This file was not synced to the cloud.")
+            if self._on_uploaded:
+                self._on_uploaded()
             # Let the bar's animation to 100% actually finish (and be
             # briefly visible) before the overlay disappears.
             self.after(400, self.loading_overlay.hide)
