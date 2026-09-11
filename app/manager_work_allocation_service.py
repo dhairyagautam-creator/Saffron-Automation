@@ -72,6 +72,7 @@ from app.manager_work_allocation_shared import (
     merge_same_month_duplicates,
     sync_rolling_window,
 )
+from app.module_data_version_service import bump_data_version
 from database.connection import get_config_session, utcnow
 from database.models import (
     ManagerWorkAllocationBMDetail,
@@ -283,6 +284,11 @@ def process_manager_work_allocation_report(records: list) -> dict:
         session.commit()
     finally:
         session.close()
+
+    # Phase 2 of email authority: module-wide counter, shared with RGD
+    # Coverage and the RBM engine (see
+    # docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md §1).
+    bump_data_version("work_distribution")
 
     flagged_count = sum(1 for f in findings if f["status"] == STATUS_FLAGGED)
     logger.info(

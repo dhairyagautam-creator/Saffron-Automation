@@ -227,6 +227,26 @@ class ProfileNameCache(Base):
     cached_at = Column(DateTime, nullable=True)
 
 
+class ModuleDataVersion(Base):
+    """Per module: a plain incrementing counter, bumped by exactly 1 each
+    time that module's underlying data actually changes (see
+    app/module_data_version_service.py). Exists only for modules with no
+    real sync manifest yet (Inventory, Work Distribution) -- Path Validator
+    doesn't need a row here, it already has active_session.import_id as
+    its own exact identifier (see app/session_state.py). This is Phase 2 of
+    email authority's local stand-in for a manifest seq, per
+    docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md -- never synced itself; only its
+    CURRENT value (compared against what app.email_send_history_service
+    recorded a send was made against) drives the Send Emails button's
+    state. Deliberately not reset, not recomputed from anything else."""
+
+    __tablename__ = "module_data_version"
+
+    module = Column(String, primary_key=True)
+    version = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, nullable=True)
+
+
 class ReviewCoverageParameter(Base):
     """A single named setting for the Coverage Summary automated-email
     workflow (see app/review_coverage_email_settings_service.py) --

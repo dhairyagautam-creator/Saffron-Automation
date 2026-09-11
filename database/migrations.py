@@ -844,6 +844,20 @@ def ensure_review_system_sync_tables() -> None:
             logger.info(f"Migration: created '{model.__tablename__}' table")
 
 
+def ensure_module_data_version_table() -> None:
+    """Create module_data_version -- Phase 2 of email authority's local
+    per-module counter (see database/models.py, docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md).
+    init_db()'s Base.metadata.create_all() already creates this on a
+    brand-new install; this covers every existing install that ran
+    init_db() before this model existed."""
+    from database.models import ModuleDataVersion
+
+    engine = get_config_engine()
+    if not inspect(engine).has_table(ModuleDataVersion.__tablename__):
+        ModuleDataVersion.__table__.create(bind=engine)
+        logger.info(f"Migration: created '{ModuleDataVersion.__tablename__}' table")
+
+
 def ensure_work_distribution_doctors_bm_abm_code_columns() -> None:
     """Add bm_code/abm_code to work_distribution_doctors if they predate
     the 2026-08 BM/ABM Code fix (see WorkDistributionDoctor's own
@@ -1067,6 +1081,7 @@ def run_startup_migrations() -> None:
     ensure_manager_work_allocation_records_pair_month_unique_index()
     ensure_review_file_slots_sync_columns()
     ensure_review_system_sync_tables()
+    ensure_module_data_version_table()
     ensure_work_distribution_doctors_bm_abm_code_columns()
     ensure_work_distribution_findings_employee_code_column()
     ensure_app_settings_inventory_reset_column()

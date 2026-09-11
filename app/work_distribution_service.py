@@ -59,6 +59,7 @@ from app.doj_eligibility_service import (
 )
 from app.hierarchy_parser import find_by_employee_code
 from app.manager_work_allocation_shared import parse_month
+from app.module_data_version_service import bump_data_version
 from app.work_distribution_parameters_service import get_all as get_parameters
 from database.connection import get_config_session, utcnow
 from database.models import WorkDistributionDoctor, WorkDistributionFinding
@@ -358,6 +359,13 @@ def process_work_distribution_report(doctors: list) -> dict:
         session.commit()
     finally:
         session.close()
+
+    # Phase 2 of email authority: module-wide counter, shared with Manager
+    # Work Allocation's own two engines (see
+    # docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md §1) -- the Send Emails button
+    # is one button covering both, so "data changed" means either engine's
+    # findings changed, not just this one.
+    bump_data_version("work_distribution")
 
     flagged_count = sum(1 for f in findings if f["status"] == STATUS_FLAGGED)
     logger.info(

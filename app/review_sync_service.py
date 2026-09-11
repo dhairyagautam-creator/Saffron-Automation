@@ -32,6 +32,7 @@ from loguru import logger
 from postgrest.exceptions import APIError
 
 from app.config import REVIEW_UPLOADS_DIR
+from app.profile_names_service import display_name_for, refresh_profile_name_cache
 from app.rbac_state import current_profile
 from app.review_schemas import get_slot_def
 from app.review_upload_service import _clear_stale_copies, _stored_path_for
@@ -39,7 +40,7 @@ from app.review_validation import validate_review_file
 from app.supabase_client import get_supabase_client
 from app.version import APP_VERSION
 from database.connection import get_session, utcnow
-from database.models import ProfileNameCache, ReviewFileSlot, SyncModuleCheck, SyncState
+from database.models import ReviewFileSlot, SyncModuleCheck, SyncState
 
 MODULE = "review_system"
 BUCKET = "sync-uploads"
@@ -79,73 +80,11 @@ def _is_newer_version(remote_version: str, local_version: str) -> bool:
 
 
 # --- Profile name resolution ------------------------------------------------
-#
-# Source of truth is public.profile_display_names (a view -- see
-# 0023_sync_manifest.sql -- exposing exactly id/full_name/active to any
-# authenticated user, since a plain RLS policy can't restrict to specific
-# columns and profiles holds role_id/is_super_admin alongside the name).
-#
-# ProfileNameCache is a local, read-through fallback ONLY, kept for the
-# offline case (docs/SYNC_DESIGN.md's "Supabase unreachable must not block
-# anything"): display_name_for() runs synchronously on every slot-row
-# render, so it cannot make a live network call itself. Whenever a
-# manifest check succeeds, this cache is refreshed straight from the view
-# (never authoritative on its own -- it just mirrors the last successful
-# read); when offline, it serves whatever it last knew rather than
-# blocking or showing nothing. It plays no part in any sync/permission
-# decision -- ReviewFileSlot.uploaded_by and sync_manifest.uploaded_by
-# (the uuids) remain the only source of truth for "who uploaded this".
-
-def _refresh_profile_name_cache(client) -> None:
-    """Best-effort: pulls the full {id -> full_name} roster from
-    public.profile_display_names and upserts it into the local read-through
-    cache. Called opportunistically after a successful manifest check --
-    never raises, a failure here just means names stay whatever was
-    cached before."""
-    try:
-        response = client.table("profile_display_names").select("id, full_name").execute()
-    except Exception as exc:
-        logger.warning(f"Review sync: could not refresh profile name cache: {exc!r}")
-        return
-
-    now = utcnow()
-    session = get_session()
-    try:
-        for row in response.data or []:
-            cached = session.query(ProfileNameCache).filter_by(id=row["id"]).first()
-            if cached is None:
-                cached = ProfileNameCache(id=row["id"])
-                session.add(cached)
-            cached.full_name = row.get("full_name")
-            cached.cached_at = now
-        session.commit()
-    finally:
-        session.close()
-
-
-def display_name_for(profile_id: str | None) -> str:
-    """Best-effort display name for a profile uuid -- the current user's
-    own name resolves instantly from rbac_state (no cache/network needed,
-    so a user's own upload always shows correctly even before any check
-    has ever run); anyone else's comes from the local read-through cache
-    of public.profile_display_names (see module note above -- never a live
-    query, this runs synchronously during UI rendering). Falls back to a
-    shortened uuid if truly nothing is known yet, never to a blank label --
-    a slot with an unresolved uploader should look incomplete, not
-    silently anonymous."""
-    if not profile_id:
-        return "Unknown"
-    me = current_profile()
-    if me is not None and me.id == profile_id:
-        return me.full_name or me.email
-    session = get_session()
-    try:
-        cached = session.query(ProfileNameCache).filter_by(id=profile_id).first()
-    finally:
-        session.close()
-    if cached and cached.full_name:
-        return cached.full_name
-    return f"User {profile_id[:8]}"
+# display_name_for()/refresh_profile_name_cache() now live in
+# app/profile_names_service.py (extracted for Phase 2 of email authority,
+# which reuses the exact same mechanism) -- imported above, re-exported
+# from this module's own namespace so nothing that already imports
+# display_name_for from here needs to change.
 
 
 # --- Upload path -------------------------------------------------------
@@ -337,7 +276,7 @@ def check_for_updates() -> dict:
     # fresh machine's first-ever check the cache is empty, and doing this
     # after building `changed` would show "User <uuid8>" for every
     # co-worker's upload instead of their real name.
-    _refresh_profile_name_cache(client)
+    refresh_profile_name_cache(client)
 
     session = get_session()
     try:

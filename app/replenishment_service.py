@@ -55,6 +55,7 @@ import pandas as pd
 from loguru import logger
 
 from app.cwh_service import get_cwh_stock_lookup
+from app.module_data_version_service import bump_data_version
 from app.threshold_service import (
     format_deficit_display,
     get_thresholds_lookup,
@@ -260,6 +261,11 @@ def evaluate_replenishment(df: pd.DataFrame) -> dict:
         session.commit()
     finally:
         session.close()
+
+    # Phase 2 of email authority: bump AFTER the rebuild commits -- this is
+    # the actual moment inventory_replenishment's data changes (see
+    # docs/EMAIL_AUTHORITY_PHASE2_CONTEXT.md §1).
+    bump_data_version("inventory_module")
 
     evaluated = replenishment_required + healthy
     logger.info(
