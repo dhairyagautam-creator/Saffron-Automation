@@ -267,11 +267,27 @@ class LoginPage(ctk.CTkFrame):
         session in the background before showing the form. Every later
         time (e.g. after a future logout), the check is skipped -- logging
         out already clears any saved session, so re-checking would just be
-        a wasted round trip -- and the form is simply reset."""
+        a wasted round trip -- and the form is simply reset.
+
+        The startup check is deferred via self.after(0, ...) rather than
+        called directly: on_show() runs synchronously inside
+        MainWindow.__init__(), before main.py's app.mainloop() has started.
+        _check_existing_session() starts a background thread whose worker
+        calls self.after(0, ...) itself once restore_session() returns --
+        if that returns fast (the common case: no saved session at all),
+        the worker can call self.after() BEFORE this process's own mainloop
+        has started, which raises "RuntimeError: main thread is not in main
+        loop" and silently kills the worker thread, leaving the "Checking
+        your saved session..." overlay stuck forever (the callback that
+        would have hidden it never ran). Scheduling the whole check via
+        self.after(0, ...) here instead means it can only start once the
+        mainloop is confirmed to be dispatching events -- by the time the
+        background thread's own self.after() call happens, the loop is
+        already live."""
         self._reset_form_state()
         self._hide_error()
         if not self._startup_session_checked:
             self._startup_session_checked = True
-            self._check_existing_session()
+            self.after(0, self._check_existing_session)
         else:
             self.user_entry.focus_set()
