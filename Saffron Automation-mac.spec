@@ -7,9 +7,16 @@
 #   * upx=False -- UPX corrupts Mach-O binaries / signing on macOS, and is
 #     usually absent on the runner anyway.
 #   * a .icns icon + a BUNDLE() stanza to emit a real .app.
-# Everything else (entry point, datas, hidden imports) is IDENTICAL to the
-# Windows spec on purpose. KEEP _SUPABASE_DEPENDENCY_PACKAGES / datas in sync
-# with "Saffron Automation.spec" -- if you add a dependency there, add it here.
+# Everything else (entry point, hidden imports) is IDENTICAL to the Windows
+# spec on purpose. KEEP _SUPABASE_DEPENDENCY_PACKAGES in sync with
+# "Saffron Automation.spec" -- if you add a dependency there, add it here.
+#
+# One deliberate difference in `datas`: unlike the Windows spec, this one
+# does NOT bundle .env into the app. A signed/notarized .app is meant to be
+# read-only, so baked-in Supabase credentials could never be rotated without
+# a full rebuild. app/platform_paths.py's env_path() instead points a frozen
+# macOS build at ~/Library/Application Support/Saffron Automation/.env at
+# runtime -- see that module's docstring.
 
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -41,7 +48,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('.env', '.')],
+    datas=[('assets', 'assets')],
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},

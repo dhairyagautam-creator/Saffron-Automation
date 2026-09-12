@@ -9,11 +9,16 @@ name: Build (Windows + macOS)
 on:
   workflow_dispatch:
   push:
-    # A push to the develop branch builds both artifacts (no release, no
-    # tag). This is what lets a Windows user get a macOS .dmg built on the
-    # native runner.
+    # A push to develop or tags builds BOTH artifacts (no release, no tag
+    # creation) -- see the windows job's `if:` below, which keeps its
+    # trigger scope exactly this, unchanged. `development` was added
+    # (macOS port work) for the macos job only: it's the actual active
+    # branch in this repo (tracked to origin/review-system-sync-slice, NOT
+    # origin/develop -- a pre-existing branch-name mismatch, not something
+    # introduced here), and wasn't covered by any trigger before this.
     branches:
       - develop
+      - development
     tags:
       - 'v*'
 
@@ -24,6 +29,12 @@ jobs:
   windows:
     name: Windows build + installer
     runs-on: windows-latest
+    # Keeps this job's trigger scope exactly what it was before `development`
+    # was added to the shared push.branches list above (that addition was
+    # for the macos job only) -- explicit equality on `develop`, not
+    # startsWith, because `refs/heads/develop` is a string-prefix of
+    # `refs/heads/development` and would otherwise wrongly match it too.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
 
@@ -80,6 +91,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # First step, unconditionally, so the logs-upload step at the bottom
+      # (if: always()) has somewhere to write even if a step below fails
+      # before ever creating this directory itself.
+      - name: Prepare log directory
+        run: mkdir -p ci-logs
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -91,6 +108,34 @@ jobs:
       - name: Read app version
         id: ver
         run: echo "version=$(python -c 'from app.version import APP_VERSION; print(APP_VERSION)')" >> "$GITHUB_OUTPUT"
+
+      # Installs into the runner's system Python (not build_app.sh's own
+      # .venv-mac) so pytest and the smoke test below run with the same
+      # interpreter setup-python just configured. build_app.sh still does
+      # its own isolated `pip install -r requirements.txt` into .venv-mac
+      # further down -- that's deliberate (see its own comment: local/CI
+      # build parity), so requirements do get installed twice, harmlessly.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Run test suite
+        run: |
+          set -euo pipefail
+          python -m pytest -q 2>&1 | tee ci-logs/pytest.log
+
+      # Headless: no MainWindow()/mainloop() (see main.py's smoke_test
+      # branch) -- initializes the DB, runs startup migrations, resolves
+      # app/config.py's paths, and imports every sync + email-authority
+      # service module, without needing a display or real Supabase
+      # credentials. Runs before the PyInstaller build so a startup-path
+      # break fails fast instead of only showing up in a built .app.
+      - name: Run headless smoke test
+        run: |
+          set -euo pipefail
+          python main.py --smoke-test 2>&1 | tee ci-logs/smoke_test.log
 
       # Import the Developer ID Application certificate into a throwaway
       # keychain so codesign (invoked by build_app.sh) can find it by
@@ -126,18 +171,32 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/apple_api_key.p8
         run: |
+          set -euo pipefail
           if [ -n "${{ secrets.APPLE_API_KEY }}" ]; then
             echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > "$APPLE_API_KEY_PATH"
           fi
           chmod +x build_app.sh
-          ./build_app.sh
+          ./build_app.sh 2>&1 | tee ci-logs/build_app.log
 
       - name: Clean up signing keychain
         if: ${{ always() && secrets.MACOS_CERTIFICATE != '' }}
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
-      - uses: actions/upload-artifact@v4
+      # if: always() + if-no-files-found: warn (not error) -- on a failed
+      # build there's no .dmg yet, and that's not a reason to fail this
+      # upload step too; the job is already red from whichever step failed.
+      - name: Upload .dmg
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: Saffron-Automation-macOS-${{ steps.ver.outputs.version }}
           path: dist/release/Saffron-Automation-macOS-${{ steps.ver.outputs.version }}.dmg
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - name: Upload build/test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Saffron-Automation-macOS-logs-${{ steps.ver.outputs.version }}
+          path: ci-logs/
+          if-no-files-found: warn

@@ -10,7 +10,6 @@ import base64
 import json
 import os
 import sys
-from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
@@ -18,7 +17,9 @@ from loguru import logger
 from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+from app.platform_paths import env_path
+
+_ENV_PATH = env_path()
 _env_file_found = _ENV_PATH.exists()
 load_dotenv(_ENV_PATH)
 

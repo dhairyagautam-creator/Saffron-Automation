@@ -56,7 +56,33 @@ def _fatal_startup_error(message: str) -> None:
     sys.exit(1)
 
 
-def main() -> None:
+def _run_smoke_test_imports() -> None:
+    """Import every sync and email-authority service module explicitly, so
+    a platform-specific import-time break in one of them (missing native
+    dependency, keyring backend resolution, etc.) surfaces here with a
+    clear traceback instead of only showing up the first time a user opens
+    that module's screen. This is deliberately import-only -- it does not
+    make network calls or build any UI, so it stays fast and deterministic
+    in CI regardless of whether real Supabase credentials are configured."""
+    import app.email_send_history_service  # noqa: F401
+    import app.email_settings_service  # noqa: F401
+    import app.email_template  # noqa: F401
+    import app.inventory_email_recipients_service  # noqa: F401
+    import app.inventory_email_settings_service  # noqa: F401
+    import app.inventory_notification_service  # noqa: F401
+    import app.inventory_sync_service  # noqa: F401
+    import app.master_email_recipients_service  # noqa: F401
+    import app.notification_service  # noqa: F401
+    import app.review_coverage_email_settings_service  # noqa: F401
+    import app.review_coverage_email_template  # noqa: F401
+    import app.review_coverage_notification_service  # noqa: F401
+    import app.review_sync_service  # noqa: F401
+    import app.work_distribution_email_settings_service  # noqa: F401
+    import app.work_distribution_email_template  # noqa: F401
+    import app.work_distribution_notification_service  # noqa: F401
+
+
+def main(smoke_test: bool = False) -> None:
     # configure_logging() is already internally defensive (see
     # app/logging_config.py), but logging must never be the reason this
     # application fails to start, so the call itself is also guarded here.
@@ -78,9 +104,14 @@ def main() -> None:
         )
         return
 
-    logger.info("Starting Saffron Automation")
+    logger.info("Starting Saffron Automation" + (" (smoke test)" if smoke_test else ""))
     log_config_status()
     _set_windows_app_id()
+
+    if smoke_test:
+        from app.config import DATA_DIR, DATABASE_PATH
+
+        logger.info(f"Smoke test: DATA_DIR={DATA_DIR} DATABASE_PATH={DATABASE_PATH}")
 
     # Locked to Light: the enterprise theme is a deliberate white/light-gray
     # look (see ui/theme.py), not meant to adapt to system dark mode.
@@ -102,6 +133,8 @@ def main() -> None:
         ensure_inventory_parameter_defaults()
         ensure_work_distribution_parameter_defaults()
         ensure_manager_work_allocation_parameter_defaults()
+        if smoke_test:
+            _run_smoke_test_imports()
     except Exception as exc:
         _fatal_startup_error(
             "Saffron Automation could not open its database.\n\n"
@@ -111,6 +144,12 @@ def main() -> None:
         )
         return
 
+    if smoke_test:
+        # No display, no MainWindow/mainloop: this is a headless CI gate
+        # (see .github/workflows/build.yml's macos job), not a real launch.
+        logger.info("Smoke test passed: startup completed cleanly, exiting without opening a window")
+        return
+
     app = MainWindow()
     app.mainloop()
 
@@ -118,4 +157,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(smoke_test="--smoke-test" in sys.argv)

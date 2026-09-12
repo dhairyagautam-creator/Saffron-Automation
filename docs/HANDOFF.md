@@ -155,16 +155,41 @@ the "before" state.
 
 ## 6. macOS port
 
-Planning only — **zero code written**. Decisions made so far, in conversation, nowhere else in writing:
+**Correction to an earlier version of this section**, which claimed "zero code written" — that was
+wrong even when it was written: a working build pipeline already existed at that point (`ee2296c
+Release v2.4.0: ... macOS signing`, committed *before* this doc), this section just never mentioned it.
+Don't trust a doc's claim of "nothing exists yet" over what's actually in the tree — check first.
 
-- **Notarization was explicitly declined**, in favor of right-click-Open (Gatekeeper's manual override),
-  at zero cost — no Apple Developer Program enrollment, no notarization pipeline. This was a deliberate
-  cost/effort trade-off, not an oversight; don't propose adding notarization back in without checking
-  whether that trade-off still holds.
-- **One blocking open question, still unanswered:** whether the target Mac is Apple Silicon or Intel.
-  This determines the PyInstaller target architecture (and whether a universal2 build or Rosetta
-  compatibility matters at all) and has not been resolved. Nothing else in the macOS port can usefully
-  start until this is answered.
+**What actually exists, arm64-only, target confirmed Apple Silicon:**
+- `.github/workflows/build.yml`'s `macos` job — `runs-on: macos-latest` (confirmed arm64-only as of
+  Sept 2026; GitHub dropped Intel from the default macOS image). Runs: checkout → Python 3.12 → write
+  `.env` from secrets → **pytest → headless smoke test (`python main.py --smoke-test`, gated on it
+  passing)** → optional signing-cert import → `build_app.sh` → upload `.dmg` + build/test logs as
+  artifacts (`if: always()`, so failed runs still leave something to inspect).
+- `Saffron Automation-mac.spec` — a separate PyInstaller spec producing a real `.app` bundle (onedir:
+  `EXE(exclude_binaries=True)` + `COLLECT()` + `BUNDLE()`), `.icns` icon, `Info.plist`. Kept intentionally
+  separate from the Windows spec so the Windows build stays byte-for-byte unchanged; see that file's
+  header comment for the full list of what differs (upx, icon format, macOS keyring hidden-import,
+  the `BUNDLE()` stanza, and — as of this pass — not bundling `.env`, see below).
+- `build_app.sh` — venv, PyInstaller build, `codesign --deep --options runtime` against
+  `entitlements.plist`, packages into a drag-to-Applications `.dmg` via `hdiutil`, optionally notarizes
+  via `notarytool`/`stapler` if Apple credentials are present.
+- **Notarization/signing:** already wired as an optional no-op — `SIGN_IDENTITY` defaults to `-`
+  (ad-hoc) and notarization is skipped with a warning when Apple credentials aren't set (`build_app.sh`).
+  This already satisfies a $0 budget; nothing needed removing, it just needs the secrets left unset.
+- **`.env`:** was bundled directly into the `.app` (`datas=[('.env', '.')]`) exactly like Windows, which
+  is wrong for a signed/notarized bundle meant to be read-only. Fixed this pass: `app/platform_paths.py`
+  (new, minimal — only handles the macOS data-dir case) points a *frozen* macOS build at
+  `~/Library/Application Support/Saffron Automation/.env` instead; source runs and the frozen Windows
+  build are unchanged. Consequence: a freshly built `.dmg` has no Supabase credentials on first launch
+  on a real Mac until that file is placed there manually — nothing in the codebase writes it at runtime
+  yet.
+- **Known real gap, not yet fixed:** `app/config.py`'s frozen-build `DATA_DIR` resolution has no macOS
+  branch — on a frozen mac build it falls through to `Path.home() / "Saffron Validator"` rather than the
+  `~/Library/Application Support/...` convention. Folding this (and the rest of `app/config.py`'s
+  Windows-specific logic) into `platform_paths.py` is a separate, larger pass — not done here.
+- **Still gapped as of this doc:** whatever this pass's own report to the user says is still open
+  (e.g. the CI trigger scope) — check that conversation/PR, not this paragraph, for the current state.
 
 ---
 
@@ -222,7 +247,8 @@ Full test suite: 378 passed, 14 skipped, 0 failed, as of the last run before thi
    of how correct the code is.
 4. **Decide Review System's email-authority scope** (Section 3) — Coverage-Summary-only, replace vs.
    coexist with the existing "Send Emails Now" button — before building anything for that module.
-5. **Answer the Apple Silicon vs. Intel question** (Section 6) before writing any macOS port code.
+5. ~~Answer the Apple Silicon vs. Intel question~~ — resolved: Apple Silicon, confirmed directly by the
+   user. See Section 6 for the current state of the macOS build pipeline.
 6. Longer-term, unscheduled: address the historical-replay gap and findings-identity-stability problem
    (Section 5) before extending sync to Inventory/Payment/Work Distribution/Path Validator — none of them
    even retain source files yet, which has to come first regardless of the sync design chosen.

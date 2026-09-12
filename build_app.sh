@@ -52,15 +52,13 @@ echo ">> Installing requirements"
 python -m pip install --upgrade pip >/dev/null
 python -m pip install -r requirements.txt
 
-# 3. PyInstaller needs a .env to bundle (datas=[('.env', '.')]). Create an
-#    empty one if missing so the build never fails on a fresh checkout; real
-#    Supabase keys are injected by CI or a developer's local .env.
-if [ ! -f ".env" ]; then
-  echo ">> No .env found -- creating an empty placeholder for the build"
-  : > .env
-fi
-
-# 4. Build the .app.
+# 3. Build the .app. Unlike the Windows build, this spec does NOT bundle
+#    .env -- a signed/notarized .app is meant to be read-only, so baked-in
+#    Supabase credentials could never be rotated without a full rebuild.
+#    app/platform_paths.py points a frozen macOS build at
+#    ~/Library/Application Support/Saffron Automation/.env instead; that
+#    file must be placed there separately (first-run setup / manual copy),
+#    not by this build script.
 echo ">> Building $APP_NAME.app"
 python -m PyInstaller --noconfirm --clean "$SPEC"
 
@@ -70,7 +68,7 @@ if [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
-# 4b. Sign the whole bundle (--deep: PyInstaller's own EXE()-level signing
+# 4. Sign the whole bundle (--deep: PyInstaller's own EXE()-level signing
 # only covers the main executable, not the dozens of bundled .dylibs/.so
 # files -- notarization requires EVERY Mach-O inside to be signed). Hardened
 # runtime (--options runtime) is mandatory for notarization; entitlements.plist
