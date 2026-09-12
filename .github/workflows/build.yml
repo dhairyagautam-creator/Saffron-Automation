@@ -88,6 +88,14 @@ jobs:
   macos:
     name: macOS build + dmg
     runs-on: macos-latest
+    # secrets.X != '' isn't valid directly inside a step-level `if:` in this
+    # repo's configuration (GitHub rejects the whole workflow file at parse
+    # time with "Unrecognized named-value: 'secrets'" -- pre-existing since
+    # ee2296c, never caught before because this workflow had never actually
+    # been triggered until now). env IS valid in step `if:`, so compute the
+    # presence check once here instead.
+    env:
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -145,7 +153,7 @@ jobs:
       # but the keychain is still deleted in a final cleanup step, matching
       # standard CI cert-handling practice.
       - name: Import signing certificate
-        if: ${{ secrets.MACOS_CERTIFICATE != '' }}
+        if: ${{ env.HAS_MACOS_CERT == 'true' }}
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -179,7 +187,7 @@ jobs:
           ./build_app.sh 2>&1 | tee ci-logs/build_app.log
 
       - name: Clean up signing keychain
-        if: ${{ always() && secrets.MACOS_CERTIFICATE != '' }}
+        if: ${{ always() && env.HAS_MACOS_CERT == 'true' }}
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
       # if: always() + if-no-files-found: warn (not error) -- on a failed
