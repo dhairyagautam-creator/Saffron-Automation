@@ -88,6 +88,13 @@ jobs:
   macos:
     name: macOS build + dmg
     runs-on: macos-latest
+    # No step here should plausibly need this long (pytest ran in 47s
+    # locally; even a cold dependency install + PyInstaller build + dmg
+    # packaging shouldn't approach it) -- without this, a genuine hang (as
+    # opposed to a slow run) has no ceiling: this job has no other timeout,
+    # so it would otherwise run for GitHub's 360-minute default, and macOS
+    # runner minutes are billed at a 10x multiplier the whole time.
+    timeout-minutes: 30
     # secrets.X != '' isn't valid directly inside a step-level `if:` in this
     # repo's configuration (GitHub rejects the whole workflow file at parse
     # time with "Unrecognized named-value: 'secrets'" -- pre-existing since
