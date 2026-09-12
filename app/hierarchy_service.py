@@ -217,7 +217,7 @@ def compute_seniors(rows: list[dict]) -> None:
         row["senior_designation"] = senior.get("designation", "") if senior else ""
 
 
-def resolve_senior(hierarchy_row: dict | None) -> dict | None:
+def resolve_senior(hierarchy_row: dict | None, module_key: str) -> dict | None:
     """Single-row, DB-backed resolution -- for the rare on-demand case
     where a caller has one employee's hierarchy row and wants their Senior
     without a full Organization Data refresh. Prefer reading the
@@ -226,7 +226,11 @@ def resolve_senior(hierarchy_row: dict | None) -> dict | None:
     here for completeness, not the primary path. Uses the exact same
     FALLBACK_CHAINS/is_valid_recipient/fallback_chain_for rules as
     compute_seniors(), just backed by live queries instead of in-memory
-    maps."""
+    maps.
+
+    `module_key` selects which of the three hierarchy tables to query --
+    see app.hierarchy_parser.HIERARCHY_TABLES -- since `hierarchy_row`
+    alone doesn't carry which module it came from."""
     if not hierarchy_row:
         return None
 
@@ -243,12 +247,12 @@ def resolve_senior(hierarchy_row: dict | None) -> dict | None:
         if level in DIRECTLY_ASSIGNED_LEVELS:
             code = hierarchy_row.get(f"{level.lower()}_code")
             name = hierarchy_row.get(f"{level.lower()}_name")
-            candidate = find_by_employee_code(code) if code else None
+            candidate = find_by_employee_code(module_key, code) if code else None
             if candidate is None and name:
-                matches = find_by_employee_name(name)
+                matches = find_by_employee_name(module_key, name)
                 candidate = matches[0] if matches else None
         else:
-            candidate = find_by_designation(division, source_sheet, level)
+            candidate = find_by_designation(module_key, division, source_sheet, level)
         if is_valid_recipient(candidate):
             return candidate
 

@@ -19,7 +19,7 @@ new business logic, only shared display.
 import pandas as pd
 from sqlalchemy import inspect
 
-from app.hierarchy_parser import HIERARCHY_TABLE
+from app.hierarchy_parser import table_for_module
 from app.table_export_service import default_export_filename, export_rows_with_ui
 from database.connection import get_data_engine
 from ui.components import Card, EmptyState, KPICard, PrimaryButton, styled_treeview
@@ -71,13 +71,18 @@ KPI_SPECS = [
 
 class HierarchyTableSection(ctk.CTkFrame):
     """KPI cards + search + Export + a styled_treeview table of the current
-    employee_hierarchy data. The owning page is responsible for triggering
-    app.hierarchy_parser.refresh_hierarchy() (each page's own Browse/Refresh
-    workflow differs) and then calling update_kpis(stats) + load_from_db()
-    with the result -- this component only renders."""
+    employee_hierarchy data FOR ONE MODULE (`module_key` -- see
+    app.hierarchy_parser.HIERARCHY_TABLES; each of the three owning pages
+    passes its own). The owning page is responsible for triggering
+    app.hierarchy_parser.refresh_hierarchy(module_key) (each page's own
+    Browse/Refresh workflow differs) and then calling update_kpis(stats) +
+    load_from_db() with the result -- this component only renders."""
 
-    def __init__(self, master, export_filename_prefix: str = "OrganizationData", **kwargs) -> None:
+    def __init__(
+        self, master, module_key: str, export_filename_prefix: str = "OrganizationData", **kwargs
+    ) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
+        self._module_key = module_key
         self._export_filename_prefix = export_filename_prefix
         self.kpi_cards: dict[str, KPICard] = {}
         self._all_rows: list[tuple] = []
@@ -141,13 +146,14 @@ class HierarchyTableSection(ctk.CTkFrame):
         self.kpi_cards["Hierarchy Relationships"].set_value(f"{stats['hierarchy_relationships']:,}")
 
     def load_from_db(self) -> None:
-        """Reloads the table from the current employee_hierarchy table --
-        call after a refresh, and once on page show, exactly like
+        """Reloads the table from this module's own current hierarchy
+        table -- call after a refresh, and once on page show, exactly like
         Organization Data's own on_show() always has."""
-        if not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+        table = table_for_module(self._module_key)
+        if not inspect(get_data_engine()).has_table(table):
             self._all_rows = []
         else:
-            df = pd.read_sql_table(HIERARCHY_TABLE, con=get_data_engine())
+            df = pd.read_sql_table(table, con=get_data_engine())
             for col in COLUMNS:
                 if col not in df.columns:
                     df[col] = ""

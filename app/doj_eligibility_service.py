@@ -42,6 +42,13 @@ import pandas as pd
 
 from app.hierarchy_parser import get_all_doj, get_doj_by_name
 
+# Work Distribution's own hierarchy table -- this module is exclusively
+# Work Distribution's (RGD Coverage + Manager Work Allocation, see module
+# docstring above); Path Validator's own rules never use DOJ eligibility
+# at all. Hardcoded here, once, rather than threading module_key through
+# every one of this module's callers for a value that never varies.
+_MODULE_KEY = "work_distribution"
+
 ACTIVE = "ACTIVE"
 STARTED_MONTH = "STARTED_MONTH"
 NOT_YET_JOINED = "NOT_YET_JOINED"
@@ -92,7 +99,7 @@ def load_doj_by_code() -> dict[str, date]:
     unparseable DOJ values are dropped rather than stored as None, so
     lookups can use a plain `dict.get(code)` and trust a hit is always a
     real date."""
-    return {code: parsed for code, raw in get_all_doj().items() if (parsed := parse_doj(raw)) is not None}
+    return {code: parsed for code, raw in get_all_doj(_MODULE_KEY).items() if (parsed := parse_doj(raw)) is not None}
 
 
 def load_doj_by_name() -> dict[str, date]:
@@ -101,7 +108,7 @@ def load_doj_by_name() -> dict[str, date]:
     only ever carry the BM/ABM's NAME (no employee_code), and as the
     fallback for Manager Work Allocation when a record has no
     team_emp_code on file."""
-    return {name: parsed for name, raw in get_doj_by_name().items() if (parsed := parse_doj(raw)) is not None}
+    return {name: parsed for name, raw in get_doj_by_name(_MODULE_KEY).items() if (parsed := parse_doj(raw)) is not None}
 
 
 def resolve_doj(

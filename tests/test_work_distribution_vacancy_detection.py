@@ -88,7 +88,7 @@ def _isolated_db(monkeypatch):
     monkeypatch.setattr("database.connection._Session", _factory())
     monkeypatch.setattr(wds, "load_doj_by_code", lambda: {})
     monkeypatch.setattr(wds, "load_doj_by_name", lambda: {})
-    monkeypatch.setattr(wds, "find_by_employee_code", lambda code: None)
+    monkeypatch.setattr(wds, "find_by_employee_code", lambda module_key, code: None)
 
 
 def test_vacant_bm_by_name_is_excluded_from_findings_and_grouping():

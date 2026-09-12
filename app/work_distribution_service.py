@@ -62,6 +62,10 @@ from app.manager_work_allocation_shared import parse_month
 from app.module_data_version_service import bump_data_version
 from app.work_distribution_parameters_service import get_all as get_parameters
 from database.connection import get_config_session, utcnow
+
+# Work Distribution's own hierarchy table (module_registry's canonical key
+# for this module) -- see app/hierarchy_parser.py's HIERARCHY_TABLES.
+_MODULE_KEY = "work_distribution"
 from database.models import WorkDistributionDoctor, WorkDistributionFinding
 
 STATUS_HEALTHY = "Healthy"
@@ -169,13 +173,13 @@ def _first_nonblank(values):
 
 
 def _resolve_employee_name(code: str) -> str:
-    """Display name for a BM/ABM Employee Code, resolved from the shared
-    hierarchy dataset (the same one every other module in this app already
-    uses -- see app.hierarchy_parser.find_by_employee_code). Falls back to
-    showing the code itself when it has no hierarchy match, never blank --
-    this is display only; the code, never this name, is what
+    """Display name for a BM/ABM Employee Code, resolved from Work
+    Distribution's own hierarchy dataset (see
+    app.hierarchy_parser.find_by_employee_code / HIERARCHY_TABLES). Falls
+    back to showing the code itself when it has no hierarchy match, never
+    blank -- this is display only; the code, never this name, is what
     matching/grouping/aggregation/deduplication use."""
-    row = find_by_employee_code(code)
+    row = find_by_employee_code(_MODULE_KEY, code)
     return row["employee_name"] if row and row.get("employee_name") else code
 
 

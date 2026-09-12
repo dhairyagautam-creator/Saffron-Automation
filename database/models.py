@@ -124,13 +124,30 @@ class InvestigationFinding(Base):
 
 class WorkbookConnection(Base):
     """The selected file path for one of the named hierarchy workbooks
-    (Onyx, Guardians, Xandra). This is independent of the daily call-data
-    import — it points at separate, not-yet-provided hierarchy files."""
+    (Onyx, Guardians, Xandra), scoped to ONE module via `module_key` (one
+    of app.module_registry's own canonical keys: "employee_module",
+    "work_distribution", "review_system"). This is independent of the
+    daily call-data import — it points at separate, not-yet-provided
+    hierarchy files.
+
+    Composite-unique on (module_key, workbook_name), not workbook_name
+    alone -- Path Validator's own "Onyx" connection and Work Distribution's
+    own "Onyx" connection are two different rows pointing at two different
+    files; there is no single, module-agnostic "the Onyx file" anymore
+    (see app/hierarchy_parser.py's per-module HIERARCHY_TABLES). A legacy
+    row from before this column existed carries module_key="" (see
+    database/migrations.py's ensure_workbook_connections_module_key_column)
+    -- deliberately never matched by any real module_key value, so it
+    simply becomes invisible/orphaned rather than being guessed at."""
 
     __tablename__ = "workbook_connections"
+    __table_args__ = (
+        UniqueConstraint("module_key", "workbook_name", name="uq_workbook_connections_module_key_name"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    workbook_name = Column(String, nullable=False, unique=True)
+    module_key = Column(String, nullable=False, default="")
+    workbook_name = Column(String, nullable=False)
     file_path = Column(String, nullable=True)
     # The genuine local "last modified" timestamp -- bumped in
     # app/workbook_connections.set_connection() every time this workbook

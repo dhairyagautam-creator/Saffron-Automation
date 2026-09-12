@@ -52,6 +52,21 @@ def to_local(dt: datetime | None) -> datetime | None:
     return dt.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
 
 
+# TESTS: _engine and _Session (below) are TWO SEPARATE module-level
+# singletons, each read fresh (by name, at call time) by a different set
+# of public functions -- get_engine()/get_data_engine()/get_config_engine()
+# read _engine directly; get_session()/get_data_session()/
+# get_config_session() go through _Session. A test that monkeypatches only
+# ONE of these leaves the other pointed at the REAL on-disk database.
+# Confirmed the hard way: an early version of tests/test_hierarchy_module_split.py
+# patched only _Session and, because app/hierarchy_parser.py's raw SQL
+# (pandas.to_sql, sqlalchemy.text()) goes through get_data_engine() instead,
+# it actually wrote fake rows into this project's real production database
+# before being caught and fixed. Always isolate BOTH together -- use
+# tests/db_isolation.py's isolate_database()/isolated_db fixture rather
+# than hand-rolling a session factory that patches only _Session, which is
+# the exact mistake this note exists to prevent a third time.
+
 DB_PATH = DATABASE_PATH
 
 _engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)

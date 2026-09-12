@@ -92,6 +92,11 @@ from app.hospital_service import round_coordinate as round_hospital_coordinate
 from app.email_send_history_service import get_last_send, record_send
 from app.master_email_recipients_service import division_matches, get_all_recipients as get_all_master_recipients
 from app.region_suppression import format_suppression_reason as format_region_suppression_reason
+
+# Path Validator's own hierarchy table (module_registry's canonical key
+# for this module is "employee_module") -- see app/hierarchy_parser.py's
+# HIERARCHY_TABLES.
+_PATH_VALIDATOR_MODULE_KEY = "employee_module"
 from app.region_suppression import is_region_suppressed
 from app.rule_parameters import get_parameters
 from app.send_state import update_progress
@@ -231,10 +236,10 @@ def _combined_interpretation(location_findings: list, working_hours: list) -> li
 
 
 def _resolve_employee_hierarchy_row(employee_code: str, employee_name: str) -> dict | None:
-    row = find_by_employee_code(employee_code)
+    row = find_by_employee_code(_PATH_VALIDATOR_MODULE_KEY, employee_code)
     if row:
         return row
-    matches = find_by_employee_name(employee_name)
+    matches = find_by_employee_name(_PATH_VALIDATOR_MODULE_KEY, employee_name)
     return matches[0] if matches else None
 
 
@@ -272,7 +277,7 @@ def _xandra_override_recipient(hq: str | None) -> tuple[str | None, str | None]:
     Sharma if his email is configured, or (None, None) if not (which
     means Unresolved, deliberately NOT a fall-through to the general
     chain -- see block comment above)."""
-    matches = find_by_employee_name(_XANDRA_OVERRIDE_RECIPIENT_NAME)
+    matches = find_by_employee_name(_PATH_VALIDATOR_MODULE_KEY, _XANDRA_OVERRIDE_RECIPIENT_NAME)
     for row in matches:
         if is_valid_recipient(row):
             return row["employee_name"], row["email"]

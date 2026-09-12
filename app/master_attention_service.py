@@ -36,6 +36,11 @@ from app.hierarchy_parser import find_by_employee_code, find_by_employee_name
 from app.session_state import get_active_import_id
 from app.suppression_service import filter_actionable
 
+# Path Validator's own hierarchy table (module_registry's canonical key
+# for this module is "employee_module") -- see app/hierarchy_parser.py's
+# HIERARCHY_TABLES.
+_PATH_VALIDATOR_MODULE_KEY = "employee_module"
+
 
 class FindingType:
     """Applicable finding-type identifiers surfaced on the Master page.
@@ -183,9 +188,9 @@ def _default_resolve_hierarchy(employee_code: str, employee_name: str) -> tuple[
     notification_service._resolve_employee_hierarchy_row's code-then-name
     lookup order. Returns (None, None) when Organization Data has no match, and
     (designation, None) when the resolved senior is Top Level / vacant."""
-    row = find_by_employee_code(employee_code)
+    row = find_by_employee_code(_PATH_VALIDATOR_MODULE_KEY, employee_code)
     if row is None:
-        matches = find_by_employee_name(employee_name)
+        matches = find_by_employee_name(_PATH_VALIDATOR_MODULE_KEY, employee_name)
         row = matches[0] if matches else None
     if row is None:
         return None, None

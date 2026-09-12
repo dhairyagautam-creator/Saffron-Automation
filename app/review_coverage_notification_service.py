@@ -64,6 +64,10 @@ from app.email_settings_service import get_settings
 from app.hierarchy_parser import find_by_employee_code, find_by_employee_name
 from app.hierarchy_service import is_valid_recipient
 from app.review_coverage_email_template import render_html, render_text
+
+# Review System's own hierarchy table (module_registry's canonical key
+# for this module) -- see app/hierarchy_parser.py's HIERARCHY_TABLES.
+_MODULE_KEY = "review_system"
 from app.review_coverage_service import generate_coverage_summary_bm_files
 from app.smtp_service import open_smtp_connection, send_via_connection
 from database.connection import get_config_session, to_local, utcnow
@@ -88,10 +92,10 @@ def _resolve_bm_hierarchy_row(emp_code: str, name: str) -> dict | None:
     convention for the same reason: Employee Code is the reliable
     identity, name is a display-only fallback for whatever hierarchy rows
     lack a matching code."""
-    row = find_by_employee_code(emp_code) if emp_code else None
+    row = find_by_employee_code(_MODULE_KEY, emp_code) if emp_code else None
     if row is not None:
         return row
-    matches = find_by_employee_name(name) if name else []
+    matches = find_by_employee_name(_MODULE_KEY, name) if name else []
     return matches[0] if matches else None
 
 
@@ -101,9 +105,9 @@ def _resolve_abm(bm_hierarchy_row: dict) -> dict | None:
     it (see module docstring)."""
     abm_code = bm_hierarchy_row.get("abm_code")
     abm_name = bm_hierarchy_row.get("abm_name")
-    candidate = find_by_employee_code(abm_code) if abm_code else None
+    candidate = find_by_employee_code(_MODULE_KEY, abm_code) if abm_code else None
     if candidate is None and abm_name:
-        matches = find_by_employee_name(abm_name)
+        matches = find_by_employee_name(_MODULE_KEY, abm_name)
         candidate = matches[0] if matches else None
     return candidate
 

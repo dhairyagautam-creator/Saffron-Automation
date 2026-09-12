@@ -94,6 +94,10 @@ from app.email_send_history_service import get_last_send, record_send
 from app.email_settings_service import get_settings
 from app.hierarchy_parser import find_by_designation, find_by_employee_code, find_by_employee_name
 from app.hierarchy_service import is_valid_recipient
+
+# Work Distribution's own hierarchy table (module_registry's canonical key
+# for this module) -- see app/hierarchy_parser.py's HIERARCHY_TABLES.
+_MODULE_KEY = "work_distribution"
 from app.manager_work_allocation_parameters_service import get_all as get_mwa_parameters, get_rbm_flag_tiers
 from app.manager_work_allocation_rbm_service import (
     get_all_findings as get_all_rbm_findings,
@@ -238,7 +242,7 @@ def _monthly_trend_attachment(history: dict, employee_name: str, status_heading:
 # --- Hierarchy resolution ------------------------------------------------
 
 def _hierarchy_row_for_employee(employee_name: str) -> dict | None:
-    matches = find_by_employee_name(employee_name)
+    matches = find_by_employee_name(_MODULE_KEY, employee_name)
     return matches[0] if matches else None
 
 
@@ -255,12 +259,12 @@ def _resolve_chain(hierarchy_row: dict, chain: list) -> list:
         if level in _DIRECT_LEVELS:
             code = hierarchy_row.get(f"{level.lower()}_code")
             name = hierarchy_row.get(f"{level.lower()}_name")
-            candidate = find_by_employee_code(code) if code else None
+            candidate = find_by_employee_code(_MODULE_KEY, code) if code else None
             if candidate is None and name:
-                by_name = find_by_employee_name(name)
+                by_name = find_by_employee_name(_MODULE_KEY, name)
                 candidate = by_name[0] if by_name else None
         else:
-            candidate = find_by_designation(division, source_sheet, level)
+            candidate = find_by_designation(_MODULE_KEY, division, source_sheet, level)
         if is_valid_recipient(candidate):
             recipients.append((level, candidate))
     return recipients

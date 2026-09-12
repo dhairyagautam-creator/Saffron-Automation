@@ -76,16 +76,16 @@ _HIERARCHY_BY_NAME = {
 _HIERARCHY_BY_CODE = {row["employee_code"]: row for row in _HIERARCHY_BY_NAME.values()}
 
 
-def _fake_find_by_employee_name(name):
+def _fake_find_by_employee_name(module_key, name):
     row = _HIERARCHY_BY_NAME.get((name or "").strip().lower())
     return [row] if row else []
 
 
-def _fake_find_by_employee_code(code):
+def _fake_find_by_employee_code(module_key, code):
     return _HIERARCHY_BY_CODE.get(code)
 
 
-def _fake_find_by_designation(division, source_sheet, designation):
+def _fake_find_by_designation(module_key, division, source_sheet, designation):
     return None  # no SM/AGM/GM in these fixtures -- chain just ends there
 
 

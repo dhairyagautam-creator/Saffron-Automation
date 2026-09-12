@@ -52,6 +52,9 @@ from ui.loading_overlay import LoadingOverlay
 from ui.theme import Color, Font, Spacing
 
 STATUS_BADGE_KIND = {"Connected": "success", "File Not Found": "error", "Not Configured": "neutral"}
+# Work Distribution's own hierarchy dataset (module_registry's canonical
+# key for this module) -- see app/hierarchy_parser.py's HIERARCHY_TABLES.
+MODULE_KEY = "work_distribution"
 
 
 class WorkDistributionEmailCenterPage(ctk.CTkFrame):
@@ -82,7 +85,7 @@ class WorkDistributionEmailCenterPage(ctk.CTkFrame):
         self._build_sender_credentials_card(outer)
         self._build_hierarchy_card(outer)
 
-        self.hierarchy_section = HierarchyTableSection(outer, export_filename_prefix="WorkDistributionHierarchy")
+        self.hierarchy_section = HierarchyTableSection(outer, MODULE_KEY, export_filename_prefix="WorkDistributionHierarchy")
         self.hierarchy_section.pack(fill="both", expand=True, pady=(0, Spacing.LG))
 
     # --- Sender Credentials --------------------------------------------
@@ -259,7 +262,7 @@ class WorkDistributionEmailCenterPage(ctk.CTkFrame):
         self.hierarchy_summary_label.pack(anchor="w", pady=(Spacing.SM, 0))
 
     def _refresh_connection_labels(self) -> None:
-        connections = get_connections()
+        connections = get_connections(MODULE_KEY)
         for name in WORKBOOK_NAMES:
             file_path = connections.get(name)
             status = get_status(file_path)
@@ -274,7 +277,7 @@ class WorkDistributionEmailCenterPage(ctk.CTkFrame):
         if not file_path:
             return
 
-        set_connection(workbook_name, file_path)
+        set_connection(MODULE_KEY, workbook_name, file_path)
         logger.info(f"Work Distribution hierarchy workbook connected: '{workbook_name}' -> {file_path}")
         record_upload(file_path, "Hierarchy Workbook", division=workbook_name)
         self._refresh_connection_labels()
@@ -286,7 +289,7 @@ class WorkDistributionEmailCenterPage(ctk.CTkFrame):
 
         def worker() -> None:
             try:
-                stats = refresh_hierarchy()
+                stats = refresh_hierarchy(MODULE_KEY)
                 error = None
             except Exception as exc:
                 stats = None

@@ -1,6 +1,15 @@
 """Manages named, user-selected workbook file paths — e.g. the three
 hierarchy workbooks (Onyx, Guardians, Xandra) and the email directory
 workbook. Each is a separate, independently-connected data source.
+
+Scoped by `module_key` (one of app.module_registry's own canonical keys:
+"employee_module", "work_distribution", "review_system") since Path
+Validator, Work Distribution, and Review System each connect their OWN
+workbooks now -- "Onyx" for one module is a completely different
+connection/file from "Onyx" for another (see database/models.py's
+WorkbookConnection docstring for the composite unique constraint this
+relies on). Every function below requires an explicit module_key; there is
+no module-agnostic "the" connection anymore.
 """
 
 import os
@@ -14,24 +23,29 @@ from database.models import WorkbookConnection
 WORKBOOK_NAMES = ("Onyx", "Guardians", "Xandra")
 
 
-def get_connection(workbook_name: str) -> str | None:
-    """Return the stored file path for a single named workbook, or None."""
+def get_connection(module_key: str, workbook_name: str) -> str | None:
+    """Return the stored file path for one module's single named workbook,
+    or None."""
     session = get_session()
     try:
-        row = session.query(WorkbookConnection).filter_by(workbook_name=workbook_name).first()
+        row = session.query(WorkbookConnection).filter_by(
+            module_key=module_key, workbook_name=workbook_name
+        ).first()
         return row.file_path if row else None
     finally:
         session.close()
 
 
-def get_connections(names: tuple[str, ...] = WORKBOOK_NAMES) -> dict:
-    """Return {workbook_name: file_path or None} for the given workbook names."""
+def get_connections(module_key: str, names: tuple[str, ...] = WORKBOOK_NAMES) -> dict:
+    """Return {workbook_name: file_path or None} for the given workbook
+    names, scoped to `module_key`."""
     session = get_session()
     try:
         rows = {
             row.workbook_name: row.file_path
             for row in session.query(WorkbookConnection).filter(
-                WorkbookConnection.workbook_name.in_(names)
+                WorkbookConnection.module_key == module_key,
+                WorkbookConnection.workbook_name.in_(names),
             )
         }
     finally:
@@ -40,24 +54,26 @@ def get_connections(names: tuple[str, ...] = WORKBOOK_NAMES) -> dict:
     return {name: rows.get(name) for name in names}
 
 
-def set_connection(workbook_name: str, file_path: str) -> None:
-    """Create or update the stored file path for a workbook. Bumps
-    updated_at, the genuine local "last modified" timestamp, every time
-    this workbook is (re)connected."""
+def set_connection(module_key: str, workbook_name: str, file_path: str) -> None:
+    """Create or update the stored file path for one module's workbook.
+    Bumps updated_at, the genuine local "last modified" timestamp, every
+    time this workbook is (re)connected."""
     session = get_session()
     try:
-        row = session.query(WorkbookConnection).filter_by(workbook_name=workbook_name).first()
+        row = session.query(WorkbookConnection).filter_by(
+            module_key=module_key, workbook_name=workbook_name
+        ).first()
         if row:
             row.file_path = file_path
         else:
-            row = WorkbookConnection(workbook_name=workbook_name, file_path=file_path)
+            row = WorkbookConnection(module_key=module_key, workbook_name=workbook_name, file_path=file_path)
             session.add(row)
         row.updated_at = utcnow()
         session.commit()
     finally:
         session.close()
 
-    logger.info(f"Connected workbook '{workbook_name}' -> {file_path}")
+    logger.info(f"Connected workbook '{workbook_name}' -> {file_path} (module={module_key})")
 
 
 def get_status(file_path: str | None) -> str:

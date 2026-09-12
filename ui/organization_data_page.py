@@ -26,6 +26,9 @@ from ui.icons import get_icon
 from ui.theme import Color, Font, Spacing
 
 STATUS_BADGE_KIND = {"Connected": "success", "File Not Found": "error", "Not Configured": "neutral"}
+# Path Validator's own hierarchy dataset (module_registry's canonical key
+# for this module) -- see app/hierarchy_parser.py's HIERARCHY_TABLES.
+MODULE_KEY = "employee_module"
 
 
 class OrganizationDataPage(ctk.CTkFrame):
@@ -128,7 +131,7 @@ class OrganizationDataPage(ctk.CTkFrame):
         )
         self.summary_label.pack(pady=(0, Spacing.MD))
 
-        self.hierarchy_section = HierarchyTableSection(outer, export_filename_prefix="OrganizationData")
+        self.hierarchy_section = HierarchyTableSection(outer, MODULE_KEY, export_filename_prefix="OrganizationData")
         self.hierarchy_section.pack(fill="both", expand=True)
 
     def on_show(self) -> None:
@@ -138,7 +141,7 @@ class OrganizationDataPage(ctk.CTkFrame):
         self.hierarchy_section.load_from_db()
 
     def _refresh_connection_labels(self) -> None:
-        connections = get_connections()
+        connections = get_connections(MODULE_KEY)
         for name in WORKBOOK_NAMES:
             file_path = connections.get(name)
             status = get_status(file_path)
@@ -153,7 +156,7 @@ class OrganizationDataPage(ctk.CTkFrame):
         if not file_path:
             return
 
-        set_connection(workbook_name, file_path)
+        set_connection(MODULE_KEY, workbook_name, file_path)
         logger.info(f"Organization Data workbook connected: '{workbook_name}' -> {file_path}")
         self._refresh_connection_labels()
 
@@ -163,7 +166,7 @@ class OrganizationDataPage(ctk.CTkFrame):
         self.update_idletasks()
 
         try:
-            stats = refresh_hierarchy()
+            stats = refresh_hierarchy(MODULE_KEY)
         except Exception as exc:
             logger.error(f"Refreshing Organization Data failed: {exc}")
             messagebox.showerror("Refresh Failed", f"Could not refresh Organization Data.\n\n{exc}")

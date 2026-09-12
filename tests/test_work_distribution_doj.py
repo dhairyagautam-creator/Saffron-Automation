@@ -41,7 +41,7 @@ def _use_doj_map(monkeypatch, by_name: dict):
     engine entirely)."""
     monkeypatch.setattr(wds, "load_doj_by_code", lambda: {})
     monkeypatch.setattr(wds, "load_doj_by_name", lambda: by_name)
-    monkeypatch.setattr(wds, "find_by_employee_code", lambda code: None)
+    monkeypatch.setattr(wds, "find_by_employee_code", lambda module_key, code: None)
 
 
 def _doctor(bm=None, abm=None, category="B-RGD", abm_rgd="A-RGD", bm_visits=150, abm_visits=150, **overrides):

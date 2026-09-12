@@ -1,5 +1,20 @@
 """Parses the Organization Data workbooks (one per division: Onyx,
-Guardians, Xandra) into the normalized `employee_hierarchy` table.
+Guardians, Xandra) into one of three normalized, module-owned tables --
+`employee_hierarchy_path_validator`, `employee_hierarchy_work_distribution`,
+`employee_hierarchy_review_system` (see HIERARCHY_TABLES below).
+
+Path Validator, Work Distribution, and Review System each maintain their
+OWN completely independent hierarchy dataset -- their own
+workbook_connections rows (see app.workbook_connections' module_key
+column) and their own hierarchy table. Uploading a workbook for one module
+has zero effect on the other two; there is no shared table anymore. Every
+function below takes `module_key` (one of app.module_registry's own
+canonical keys: "employee_module", "work_distribution", "review_system")
+as its first argument to select which of the three tables it operates on
+-- the parsing/column/business logic itself (row-order hierarchy
+inference, vacant handling, Senior computation, DOJ normalization) is
+identical and fully shared code across all three; only the destination
+table differs.
 
 Each workbook is a flat list of employees — one row per employee, in
 whatever order the division keeps its org chart — with columns for
@@ -50,7 +65,19 @@ from app.hierarchy_service import compute_seniors
 from app.workbook_connections import WORKBOOK_NAMES, get_connections, get_status
 from database.connection import get_data_engine
 
-HIERARCHY_TABLE = "employee_hierarchy"
+HIERARCHY_TABLES: dict[str, str] = {
+    "employee_module": "employee_hierarchy_path_validator",
+    "work_distribution": "employee_hierarchy_work_distribution",
+    "review_system": "employee_hierarchy_review_system",
+}
+
+
+def table_for_module(module_key: str) -> str:
+    """The employee_hierarchy table name for `module_key`. Every call site
+    passes one of the three fixed constants above (never user input), so a
+    typo here is a real bug to surface immediately via KeyError, not
+    something to fail open on."""
+    return HIERARCHY_TABLES[module_key]
 
 HIERARCHY_COLUMNS = [
     "employee_code",
@@ -309,21 +336,23 @@ def parse_workbook(file_path: str, workbook_name: str) -> tuple:
     }
 
 
-def _ensure_indexes() -> None:
+def _ensure_indexes(module_key: str) -> None:
+    table = table_for_module(module_key)
     with get_data_engine().begin() as conn:
         conn.execute(
-            text(f"CREATE INDEX IF NOT EXISTS idx_{HIERARCHY_TABLE}_code ON {HIERARCHY_TABLE}(employee_code)")
+            text(f"CREATE INDEX IF NOT EXISTS idx_{table}_code ON {table}(employee_code)")
         )
         conn.execute(
-            text(f"CREATE INDEX IF NOT EXISTS idx_{HIERARCHY_TABLE}_name ON {HIERARCHY_TABLE}(employee_name)")
+            text(f"CREATE INDEX IF NOT EXISTS idx_{table}_name ON {table}(employee_name)")
         )
 
 
-def refresh_hierarchy() -> dict:
-    """Read every Connected Organization Data workbook, parse it, and
-    rebuild the employee_hierarchy table. Workbooks that aren't configured
-    (or whose file can't be found) are skipped silently — that's expected,
-    not an error.
+def refresh_hierarchy(module_key: str) -> dict:
+    """Read every Connected Organization Data workbook FOR THIS MODULE
+    (see app.workbook_connections' module_key column), parse it, and
+    rebuild `module_key`'s own hierarchy table (see HIERARCHY_TABLES).
+    Workbooks that aren't configured (or whose file can't be found) are
+    skipped silently — that's expected, not an error.
 
     Returns a dict with: `employees_loaded`, `total_bm`, `total_abm`,
     `total_rbm`, `vacant_ignored`, `emails_loaded`,
@@ -331,7 +360,8 @@ def refresh_hierarchy() -> dict:
     and `workbooks_skipped` (name -> reason, only for workbooks that were
     connected but failed to parse).
     """
-    connections = get_connections(WORKBOOK_NAMES)
+    table = table_for_module(module_key)
+    connections = get_connections(module_key, WORKBOOK_NAMES)
 
     all_rows = []
     workbooks_read = []
@@ -375,8 +405,8 @@ def refresh_hierarchy() -> dict:
     # out, which is exactly how "NaN" ended up displayed in the
     # Organization Data table (see ui/organization_data_page.py).
     hierarchy_df = hierarchy_df.fillna("")
-    hierarchy_df.to_sql(HIERARCHY_TABLE, con=get_data_engine(), if_exists="replace", index=False)
-    _ensure_indexes()
+    hierarchy_df.to_sql(table, con=get_data_engine(), if_exists="replace", index=False)
+    _ensure_indexes(module_key)
 
     total_bm = int((hierarchy_df["designation"] == "BM").sum()) if len(hierarchy_df) else 0
     total_abm = int((hierarchy_df["designation"] == "ABM").sum()) if len(hierarchy_df) else 0
@@ -398,7 +428,7 @@ def refresh_hierarchy() -> dict:
         relationships = 0
 
     logger.info(
-        f"Refreshed '{HIERARCHY_TABLE}': {len(hierarchy_df)} employee(s) from "
+        f"Refreshed '{table}' ({module_key}): {len(hierarchy_df)} employee(s) from "
         f"{len(workbooks_read)} workbook(s) across {total_sheets_processed} sheet(s); "
         f"{total_bm} BM, {total_abm} ABM, {total_rbm} RBM, {vacant_ignored} vacant ignored, "
         f"{emails_loaded} email(s) loaded, {relationships} hierarchy relationship(s)"
@@ -418,32 +448,38 @@ def refresh_hierarchy() -> dict:
     }
 
 
-def find_by_employee_code(employee_code: str) -> dict | None:
-    """Look up a single hierarchy entry by employee_code."""
-    if not employee_code or not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+def find_by_employee_code(module_key: str, employee_code: str) -> dict | None:
+    """Look up a single hierarchy entry by employee_code, within
+    `module_key`'s own hierarchy table."""
+    table = table_for_module(module_key)
+    if not employee_code or not inspect(get_data_engine()).has_table(table):
         return None
     with get_data_engine().connect() as conn:
         row = conn.execute(
-            text(f"SELECT * FROM {HIERARCHY_TABLE} WHERE employee_code = :code LIMIT 1"),
+            text(f"SELECT * FROM {table} WHERE employee_code = :code LIMIT 1"),
             {"code": employee_code},
         ).mappings().first()
     return dict(row) if row else None
 
 
-def find_by_employee_name(employee_name: str) -> list:
+def find_by_employee_name(module_key: str, employee_name: str) -> list:
     """Look up hierarchy entries by employee_name (case/whitespace-insensitive;
-    may return more than one row, e.g. the same manager appearing in several sheets)."""
-    if not employee_name or not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+    may return more than one row, e.g. the same manager appearing in several
+    sheets), within `module_key`'s own hierarchy table."""
+    table = table_for_module(module_key)
+    if not employee_name or not inspect(get_data_engine()).has_table(table):
         return []
     with get_data_engine().connect() as conn:
         rows = conn.execute(
-            text(f"SELECT * FROM {HIERARCHY_TABLE} WHERE TRIM(LOWER(employee_name)) = :name"),
+            text(f"SELECT * FROM {table} WHERE TRIM(LOWER(employee_name)) = :name"),
             {"name": employee_name.strip().lower()},
         ).mappings().all()
     return [dict(r) for r in rows]
 
 
-def find_by_designation(division: str | None, source_sheet: str | None, designation: str) -> dict | None:
+def find_by_designation(
+    module_key: str, division: str | None, source_sheet: str | None, designation: str
+) -> dict | None:
     """Look up the (first) hierarchy row with the given designation within
     the same division + source_sheet -- the org chart's own zone/region
     partition (the same scope the RBM/ABM chain itself resets at per sheet,
@@ -456,12 +492,13 @@ def find_by_designation(division: str | None, source_sheet: str | None, designat
     Returns None if division/source_sheet aren't given, the table doesn't
     exist, or no row matches -- callers treat all of these as "this rung is
     unavailable", not an error."""
-    if not division or not source_sheet or not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+    table = table_for_module(module_key)
+    if not division or not source_sheet or not inspect(get_data_engine()).has_table(table):
         return None
     with get_data_engine().connect() as conn:
         row = conn.execute(
             text(
-                f"SELECT * FROM {HIERARCHY_TABLE} WHERE division = :division AND source_sheet = :sheet "
+                f"SELECT * FROM {table} WHERE division = :division AND source_sheet = :sheet "
                 f"AND UPPER(designation) = :designation LIMIT 1"
             ),
             {"division": division, "sheet": source_sheet, "designation": designation.upper()},
@@ -469,33 +506,35 @@ def find_by_designation(division: str | None, source_sheet: str | None, designat
     return dict(row) if row else None
 
 
-def get_all_designations() -> dict[str, str]:
-    """Return {employee_code: designation} for every hierarchy row, for the
-    rule engine's bulk BM/ABM-only eligibility filter (see
-    rules/same_location.py) — one query instead of one per employee/day
-    group."""
-    if not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+def get_all_designations(module_key: str) -> dict[str, str]:
+    """Return {employee_code: designation} for every hierarchy row in
+    `module_key`'s own table, for the rule engine's bulk BM/ABM-only
+    eligibility filter (see rules/same_location.py) — one query instead of
+    one per employee/day group."""
+    table = table_for_module(module_key)
+    if not inspect(get_data_engine()).has_table(table):
         return {}
     with get_data_engine().connect() as conn:
         rows = conn.execute(
-            text(f"SELECT employee_code, designation FROM {HIERARCHY_TABLE} WHERE employee_code IS NOT NULL")
+            text(f"SELECT employee_code, designation FROM {table} WHERE employee_code IS NOT NULL")
         ).all()
     return {code: designation for code, designation in rows}
 
 
-def get_all_doj() -> dict[str, str]:
+def get_all_doj(module_key: str) -> dict[str, str]:
     """Return {employee_code: doj} (the ISO 'YYYY-MM-DD' string stored by
-    _doj_cell() above) for every hierarchy row with both an employee_code
-    and a non-blank doj -- bulk, one query, mirroring
-    get_all_designations()'s own "one query instead of one per employee"
-    reasoning. See app.doj_eligibility_service for how this is actually
-    parsed and applied."""
-    if not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+    _doj_cell() above) for every row in `module_key`'s own hierarchy table
+    with both an employee_code and a non-blank doj -- bulk, one query,
+    mirroring get_all_designations()'s own "one query instead of one per
+    employee" reasoning. See app.doj_eligibility_service for how this is
+    actually parsed and applied."""
+    table = table_for_module(module_key)
+    if not inspect(get_data_engine()).has_table(table):
         return {}
     with get_data_engine().connect() as conn:
         rows = conn.execute(
             text(
-                f"SELECT employee_code, doj FROM {HIERARCHY_TABLE} "
+                f"SELECT employee_code, doj FROM {table} "
                 "WHERE employee_code IS NOT NULL AND employee_code != '' "
                 "AND doj IS NOT NULL AND doj != ''"
             )
@@ -503,18 +542,19 @@ def get_all_doj() -> dict[str, str]:
     return {code: doj for code, doj in rows}
 
 
-def get_doj_by_name() -> dict[str, str]:
-    """Return {TRIM(LOWER(employee_name)): doj} for every hierarchy row
-    with a non-blank doj -- name-keyed, for callers (RGD Coverage) whose
-    own uploaded rows only ever carry an employee's NAME, never a code.
-    First-match-wins per name, same convention as
-    app.hierarchy_service.build_lookup_maps."""
-    if not inspect(get_data_engine()).has_table(HIERARCHY_TABLE):
+def get_doj_by_name(module_key: str) -> dict[str, str]:
+    """Return {TRIM(LOWER(employee_name)): doj} for every row in
+    `module_key`'s own hierarchy table with a non-blank doj -- name-keyed,
+    for callers (RGD Coverage) whose own uploaded rows only ever carry an
+    employee's NAME, never a code. First-match-wins per name, same
+    convention as app.hierarchy_service.build_lookup_maps."""
+    table = table_for_module(module_key)
+    if not inspect(get_data_engine()).has_table(table):
         return {}
     with get_data_engine().connect() as conn:
         rows = conn.execute(
             text(
-                f"SELECT employee_name, doj FROM {HIERARCHY_TABLE} "
+                f"SELECT employee_name, doj FROM {table} "
                 "WHERE employee_name IS NOT NULL AND employee_name != '' "
                 "AND doj IS NOT NULL AND doj != ''"
             )

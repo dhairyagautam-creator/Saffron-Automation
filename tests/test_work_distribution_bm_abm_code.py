@@ -123,7 +123,7 @@ def test_same_name_different_code_remain_two_separate_employees(monkeypatch):
     """The exact case the fix targets: two real BMs both named "Rahul
     Sharma", codes 12345 and 67890 -- must produce two separate findings
     with two separate, non-overlapping doctor books, never merged into one."""
-    monkeypatch.setattr(wds, "find_by_employee_code", lambda code: {"employee_name": "Rahul Sharma"})
+    monkeypatch.setattr(wds, "find_by_employee_code", lambda module_key, code: {"employee_name": "Rahul Sharma"})
 
     doctors = [
         _doctor(bm_code="12345", doctor_code="D1", bm_visits=150),
@@ -156,7 +156,7 @@ def test_same_name_different_code_remain_two_separate_employees(monkeypatch):
 def test_same_code_different_rows_combine_into_one_employee(monkeypatch):
     """The normal case: multiple doctor rows for the SAME code correctly
     aggregate into one employee's book, exactly as before."""
-    monkeypatch.setattr(wds, "find_by_employee_code", lambda code: None)  # unresolved -- falls back to the code itself
+    monkeypatch.setattr(wds, "find_by_employee_code", lambda module_key, code: None)  # unresolved -- falls back to the code itself
 
     doctors = [
         _doctor(bm_code="12345", doctor_code="D1", bm_visits=10),
@@ -175,7 +175,7 @@ def test_unresolved_code_falls_back_to_showing_the_code_as_display_name(monkeypa
     """Existing-behavior guarantee: an employee whose code has no
     hierarchy match still shows SOMETHING (never blank) -- the code
     itself, rather than crashing or silently vanishing."""
-    monkeypatch.setattr(wds, "find_by_employee_code", lambda code: None)
+    monkeypatch.setattr(wds, "find_by_employee_code", lambda module_key, code: None)
 
     wds.process_work_distribution_report([_doctor(bm_code="NOCODE99", bm_visits=150)])
     [finding] = wds.get_all_findings()

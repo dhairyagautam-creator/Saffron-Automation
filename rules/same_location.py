@@ -34,6 +34,11 @@ from database.models import InvestigationFinding
 
 RULE_NAME = "SAME_LOCATION"
 
+# Path Validator's own hierarchy table -- see app/hierarchy_parser.py's
+# HIERARCHY_TABLES (module_registry's canonical key for this module is
+# "employee_module").
+PATH_VALIDATOR_MODULE_KEY = "employee_module"
+
 EMPLOYEE_NAME_COLUMN = "Employee Name"
 EMPLOYEE_CODE_COLUMN = "Employee Code"
 DATE_COLUMN = "Date"
@@ -107,7 +112,7 @@ def evaluate(import_id: int) -> dict:
 
     with get_current_report().timed("Validation & clustering"):
         df = _read_active_visits(import_id)
-        designations = get_all_designations()
+        designations = get_all_designations(PATH_VALIDATOR_MODULE_KEY)
         diag_total_records = len(df)
 
         findings = []

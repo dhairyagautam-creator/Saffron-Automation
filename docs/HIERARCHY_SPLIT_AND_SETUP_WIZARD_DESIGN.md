@@ -138,21 +138,36 @@ Two things make this bigger than a one-file change:
 reads the exact same shared table via the exact same `find_by_employee_code`/
 `find_by_employee_name` functions, for the same kind of recipient resolution
 Work Distribution's own notification code does. A Path-Validator/Work-Distribution
-split as currently scoped does not say where Review System's dependency goes —
-that is a decision this document cannot supply.
+split as originally scoped did not say where Review System's dependency
+goes — resolved in B6 below: Review System gets its own, third table.
 
 `app/hierarchy_service.py` (fallback-chain / `is_valid_recipient` logic) is
 itself a shared consumer across all three module families (Path Validator,
 Work Distribution, Review System) — whichever table(s) each module ends up
 pointed at, this module's own calls into `hierarchy_parser` need the same
-table-selection treatity as everything else in B4.
+table-selection treatment as everything else in B4.
 
-### B6. Open questions — decisions needed before building anything in Part B
+### B6. Decided
 
-1. **Table strategy**: two new tables (Path Validator / Work Distribution) as originally framed, or three (adding Review System), or does Review System stay pointed at whichever of the two it's closer to in kind?
-2. **`workbook_connections` schema change**: how does a single `workbook_name` become distinguishable per module — a new scoping column, or distinct name strings (e.g. `"Onyx-PV"`/`"Onyx-WD"`)? This is a real schema decision, not just a parser change.
-3. **UI consequence of B1's finding**: with four (now three, after Part A) existing entry points all pointed at one shared dataset today, does each surviving page (`organization_data_page.py`, `work_distribution_email_center_page.py`'s card, `review_hierarchy_page.py`) get repointed at its own module's table, or does the UI itself need to change shape?
-4. **Migration path for existing installs**: an install with today's single populated `employee_hierarchy` table — does it get copied into both new tables at first launch post-split, or does each module start empty and require a fresh upload? This determines whether existing users experience any disruption.
+**Table strategy — RESOLVED**: three new tables, one each for Path Validator,
+Work Distribution, and Review System — not two. This directly follows from
+B5's finding that Review System is a genuine third consumer, not something
+the original two-way framing can leave unaddressed.
 
-None of these are answered by this document — they're the actual decisions
-still needed before Part B moves from investigation to a build plan.
+**Migration path for existing installs — RESOLVED**: no data migration. All
+three new tables start genuinely empty at first launch post-split — today's
+single populated `employee_hierarchy` table is neither copied nor read from
+during the transition. Each module's hierarchy is re-uploaded separately,
+by the user, after the split ships. This applies uniformly regardless of
+whether an install currently has a populated table or not — there is no
+"existing install gets migrated, fresh install starts empty" distinction;
+every install starts every one of the three tables empty.
+
+### B7. Open questions — decisions still needed before building Part B
+
+1. **`workbook_connections` schema change**: how does a single `workbook_name` become distinguishable per module — a new scoping column, or distinct name strings (e.g. `"Onyx-PV"`/`"Onyx-WD"`/`"Onyx-Review"`)? This is a real schema decision, not just a parser change, and now needs to distinguish three modules, not two.
+2. **UI consequence of B1's finding**: with four (now three, after Part A) existing entry points all pointed at one shared dataset today, does each surviving page (`organization_data_page.py`, `work_distribution_email_center_page.py`'s card, `review_hierarchy_page.py`) get repointed at its own module's table, or does the UI itself need to change shape?
+3. **Naming/placement of the three new tables** — not yet specified (e.g. `path_validator_employee_hierarchy` / `work_distribution_employee_hierarchy` / `review_employee_hierarchy`, or some other convention), and whether `HIERARCHY_COLUMNS` stays identical across all three or diverges per module's actual needs.
+
+These three remain open — they're the decisions still needed before Part B
+moves from investigation to a build plan.

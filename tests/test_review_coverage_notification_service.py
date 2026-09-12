@@ -33,8 +33,8 @@ def _hierarchy_row(code, name, email, abm_code=None, abm_name=None):
 
 def _use_hierarchy(monkeypatch, rows_by_code: dict, rows_by_name: dict | None = None):
     rows_by_name = rows_by_name or {}
-    monkeypatch.setattr(notif, "find_by_employee_code", lambda code: rows_by_code.get(code))
-    monkeypatch.setattr(notif, "find_by_employee_name", lambda name: rows_by_name.get(name, []))
+    monkeypatch.setattr(notif, "find_by_employee_code", lambda module_key, code: rows_by_code.get(code))
+    monkeypatch.setattr(notif, "find_by_employee_name", lambda module_key, name: rows_by_name.get(name, []))
 
 
 def _bm_file(code, name, path="/tmp/x.xlsx"):

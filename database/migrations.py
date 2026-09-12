@@ -858,6 +858,38 @@ def ensure_module_data_version_table() -> None:
         logger.info(f"Migration: created '{ModuleDataVersion.__tablename__}' table")
 
 
+def ensure_workbook_connections_module_key_column() -> None:
+    """Add module_key to workbook_connections for the Employee Hierarchy
+    3-way split (Path Validator / Work Distribution / Review System each
+    now connect their own workbooks -- see app/workbook_connections.py,
+    database/models.py's WorkbookConnection docstring). Every pre-existing
+    row predates any module scoping at all, so it gets module_key='' --
+    deliberately never matched by any of the three real module_key values
+    used going forward, so it simply becomes invisible/orphaned rather than
+    being guessed at (no attempt to backfill which module an old
+    unscoped connection "belonged to" -- there is no way to know, and the
+    three hierarchy tables all start empty for this split regardless, see
+    docs/HIERARCHY_SPLIT_AND_SETUP_WIZARD_DESIGN.md).
+
+    SQLite has no ALTER TABLE ADD CONSTRAINT; a UNIQUE index enforces the
+    identical (module_key, workbook_name) guarantee without a table
+    rebuild -- same technique as
+    ensure_manager_work_allocation_records_pair_month_unique_index above."""
+    table = "workbook_connections"
+    index_name = "uq_workbook_connections_module_key_name"
+    if not inspect(get_config_engine()).has_table(table):
+        return
+    existing_columns = _existing_columns(table)
+    existing_indexes = {ix["name"] for ix in inspect(get_config_engine()).get_indexes(table)}
+    with get_config_engine().begin() as conn:
+        if "module_key" not in existing_columns:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN module_key TEXT NOT NULL DEFAULT ''"))
+            logger.info(f"Migration: added module_key column to '{table}' (existing rows set to '')")
+        if index_name not in existing_indexes:
+            conn.execute(text(f"CREATE UNIQUE INDEX {index_name} ON {table} (module_key, workbook_name)"))
+            logger.info(f"Migration: added UNIQUE(module_key, workbook_name) index to '{table}'")
+
+
 def ensure_inventory_upload_slots_table() -> None:
     """Create inventory_upload_slots -- the Inventory sync slice's local
     slot-state table (see database/models.py's InventoryUploadSlot
@@ -1097,6 +1129,7 @@ def run_startup_migrations() -> None:
     ensure_review_system_sync_tables()
     ensure_module_data_version_table()
     ensure_inventory_upload_slots_table()
+    ensure_workbook_connections_module_key_column()
     ensure_work_distribution_doctors_bm_abm_code_columns()
     ensure_work_distribution_findings_employee_code_column()
     ensure_app_settings_inventory_reset_column()
