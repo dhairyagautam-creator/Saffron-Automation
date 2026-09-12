@@ -1,10 +1,10 @@
 """Top-level application window for Saffron Automation.
 
 Owns only app-wide, startup-level concerns: window title/geometry/icon, the
-global Tk exception safety net, the first-run Setup Wizard gate, and a
-simple screen registry (Login / Home / Path Validator / Inventory
-Monitoring / Payment Analytics) swapped via tkraise() — the same stacking
-pattern already used for pages inside a module. Login is just another
+global Tk exception safety net, and a simple screen registry (Login / Home /
+Path Validator / Inventory Monitoring / Payment Analytics) swapped via
+tkraise() — the same stacking pattern already used for pages inside a
+module. Login is just another
 screen in this registry (see ui/login_page.py) so future screens (splash,
 loading, role-based navigation) can be added the same way, without a
 separate window or any restructuring. Everything module-specific (the
@@ -19,7 +19,6 @@ import customtkinter as ctk
 from loguru import logger
 
 from app import auth_service, module_registry, permissions, rbac_state
-from app.app_state_service import is_setup_completed
 from app.updater import check_for_updates
 from app.version import APP_VERSION, CHANNEL
 from ui.home_page import HomePage
@@ -28,7 +27,6 @@ from ui.login_page import LoginPage
 from ui.path_validator_module import PathValidatorModule
 from ui.payment_analytics_module import PaymentAnalyticsModule
 from ui.review_system_module import ReviewSystemModule
-from ui.setup_wizard import SetupWizard
 from ui.theme import APP_ICON, Color
 from ui.update_notification_dialog import UpdateNotificationDialog
 from ui.user_management_page import UserManagementPage
@@ -86,10 +84,6 @@ class MainWindow(ctk.CTk):
         # traceback and shows a friendly dialog instead, never touching
         # sys.stderr directly.
         self.report_callback_exception = self._report_callback_exception
-
-        if not is_setup_completed():
-            self.withdraw()  # hide the main window until setup finishes
-            SetupWizard(self, self._on_setup_wizard_finished)
 
         # Check for updates in the background after the UI is ready.
         # Use after_idle to schedule it after the main loop starts, so it doesn't
@@ -202,9 +196,6 @@ class MainWindow(ctk.CTk):
             self.after(0, lambda: self.show_screen("Login"))
 
         threading.Thread(target=worker, daemon=True).start()
-
-    def _on_setup_wizard_finished(self) -> None:
-        self.deiconify()
 
     def _check_for_updates_in_background(self) -> None:
         """Check for updates in a background thread to avoid blocking the UI."""
