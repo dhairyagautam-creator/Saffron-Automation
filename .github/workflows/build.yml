@@ -103,6 +103,13 @@ jobs:
     # presence check once here instead.
     env:
       HAS_MACOS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      # Piping python's stdout through `tee` (pytest/smoke-test/build_app.sh
+      # steps below) makes it block-buffered instead of line-buffered --
+      # dot-by-dot progress only reaches the visible log once a multi-KB
+      # buffer fills, which looks identical to a genuine hang while it's
+      # happening. Cost a wrongly-diagnosed test skip once already; unbuffer
+      # everything in this job so future runs show real-time progress.
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
 
