@@ -141,12 +141,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pytest
+          python -m pip install pytest pytest-timeout
 
+      # -v: prints each test's actual name as it runs, not anonymous dots --
+      # three prior runs all stalled at the same dot-count with no way to
+      # tell which test that position corresponds to on the runner.
+      # --timeout=60 --timeout-method=thread: pytest-timeout's watchdog
+      # dumps every thread's stack and fails just that one test instead of
+      # the whole job silently hanging for 30 minutes -- thread method
+      # (not signal) because it doesn't rely on POSIX signal delivery ever
+      # reaching a blocked native call, which a real I/O-level hang might
+      # not honor.
       - name: Run test suite
         run: |
           set -euo pipefail
-          python -m pytest -q 2>&1 | tee ci-logs/pytest.log
+          python -m pytest -v --timeout=60 --timeout-method=thread 2>&1 | tee ci-logs/pytest.log
 
       # Headless: no MainWindow()/mainloop() (see main.py's smoke_test
       # branch) -- initializes the DB, runs startup migrations, resolves
