@@ -45,6 +45,8 @@ review_uploads/
 inventory_uploads/
 # Work Distribution sync's retained uploads (business data, never committed)
 work_distribution_uploads/
+# Work Distribution hierarchy sync's retained uploads (business data, never committed)
+hierarchy_uploads/
 # Manual two-identity test data dirs (see sign_in_for_test_inventory_sync.py)
 manual_test_data/
 # Built Windows installers

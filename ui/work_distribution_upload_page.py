@@ -51,12 +51,28 @@ from app.manager_work_allocation_service import process_manager_work_allocation_
 from app.work_distribution_parser import SUPPORTED_EXTENSIONS, parse_work_distribution_report
 from app.work_distribution_service import process_work_distribution_report
 from app.work_distribution_upload_log_service import record_upload
-from app.work_distribution_upload_service import ABM, RBM, RGD, store_work_distribution_upload
+from app.work_distribution_upload_service import ABM, RBM, RGD, get_slot_state, slot_id_for
+from app.work_distribution_sync_service import (
+    ABM_SLOTS,
+    RBM_SLOTS,
+    RGD_SLOTS,
+    SLOT_LABELS,
+    apply_pending_updates,
+    check_for_updates,
+    upload_and_sync,
+)
 from ui.background_task import run_in_background
-from ui.components import CollapsibleSection, PrimaryButton, SectionHeader
+from ui.components import CollapsibleSection, PrimaryButton, SecondaryButton, SectionHeader
 from ui.icons import get_icon
 from ui.loading_overlay import LoadingOverlay
-from ui.theme import Color, Font, Spacing
+from ui.theme import Color, Font, Radius, Spacing
+
+# This page's own 9 slots out of Work Distribution sync's 12 (the other 3
+# are the hierarchy workbooks -- ui/work_distribution_email_center_page.py's
+# own banner). One shared check_for_updates()/apply_pending_updates() pair
+# covers all 12; each page just filters down to its own slot_ids -- see
+# app/work_distribution_sync_service.py's module docstring.
+_PAGE_SLOTS = RGD_SLOTS + ABM_SLOTS + RBM_SLOTS
 
 # The monthly coverage report comes as one file per division -- each with
 # identical columns (see app.work_distribution_parser.FIXED_REQUIRED_COLUMNS)
@@ -85,19 +101,60 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
         self._mwa_file_labels: dict[str, ctk.CTkLabel] = {}
         self._mwa_browse_buttons: dict[str, dict[str, PrimaryButton]] = {role: {} for role in MWA_ROLES}
         self._mwa_records: dict[str, dict[str, list]] = {role: {} for role in MWA_ROLES}
+        self._checking = False
+        self._banner_dismissed = False
         self._build_widgets()
         self.loading_overlay = LoadingOverlay(self)
+        self.refresh_from_state()
 
     def on_show(self) -> None:
-        pass
+        self._run_check()
+
+    def refresh_from_state(self) -> None:
+        """Renders every slot's CURRENTLY PERSISTED filename -- same
+        pull-to-render-parity pattern as ui/inventory_upload_page.py's own
+        refresh_from_state(): a pulled file renders identically to a
+        locally uploaded one, no visual way to tell them apart. Never
+        touches self._loaded_doctors/_mwa_records or the Run Analysis
+        buttons -- those stay local-upload-only (see
+        app/work_distribution_sync_service.py's upload_and_sync docstring:
+        a sync pull never substitutes for the manual Run Analysis click,
+        it auto-runs the combined engine itself once all 3 divisions'
+        current files are retained)."""
+        for division in DIVISION_SLOTS:
+            state = get_slot_state(RGD, division)
+            if state["uploaded"]:
+                self.file_labels[division].configure(text=state["filename"], text_color=Color.TEXT_PRIMARY)
+        for role in MWA_ROLES:
+            for division in DIVISION_SLOTS:
+                state = get_slot_state(ABM if role == "ABM" else RBM, division)
+                if state["uploaded"]:
+                    self._mwa_file_labels[f"{role}_{division}"].configure(
+                        text=state["filename"], text_color=Color.TEXT_PRIMARY
+                    )
 
     def _build_widgets(self) -> None:
         outer = ctk.CTkScrollableFrame(self, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=Spacing.LG, pady=Spacing.LG)
 
+        header_row = ctk.CTkFrame(outer, fg_color="transparent")
+        header_row.pack(fill="x", pady=(0, Spacing.SM))
         SectionHeader(
-            outer, "Work Distribution Upload", "Upload each division's current month's reports"
-        ).pack(anchor="w", pady=(0, Spacing.LG))
+            header_row, "Work Distribution Upload", "Upload each division's current month's reports"
+        ).pack(side="left", anchor="w")
+        self._refresh_button = SecondaryButton(
+            header_row, text="Refresh", image=get_icon("refresh", size=14, color=Color.PRIMARY),
+            command=self._run_check,
+        )
+        self._refresh_button.pack(side="right", anchor="n")
+
+        self._sync_status_label = ctk.CTkLabel(
+            outer, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED, anchor="w"
+        )
+        self._sync_status_label.pack(anchor="w", pady=(0, Spacing.SM))
+
+        self._banner_container = ctk.CTkFrame(outer, fg_color="transparent")
+        self._banner_container.pack(fill="x", pady=(0, Spacing.LG))
 
         rgd_section = CollapsibleSection(outer, "RGD Coverage", expanded=True)
         rgd_section.pack(fill="x", pady=(0, Spacing.LG))
@@ -296,10 +353,12 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
             self._mwa_records[role][division] = parse_result["records"]
             self._mwa_file_labels[key].configure(text=Path(file_path).name, text_color=Color.TEXT_PRIMARY)
             record_upload(file_path, f"Manager Work Allocation ({role})", division=division)
-            # Phase 1 of Work Distribution sync: retain the source file
-            # locally, alongside (never replacing) the existing parse
-            # above -- see app/work_distribution_upload_service.py.
-            store_work_distribution_upload(ABM if role == "ABM" else RBM, division, file_path)
+            # Retain the source file locally and push it to the sync
+            # manifest -- see app/work_distribution_sync_service.py.
+            report_type = ABM if role == "ABM" else RBM
+            sync_result = upload_and_sync(slot_id_for(report_type, division), file_path)
+            if not sync_result.get("synced"):
+                messagebox.showwarning("Not Synced", sync_result.get("sync_error") or "This file was not synced to the cloud.")
 
             loaded_count = sum(len(self._mwa_records[r]) for r in MWA_ROLES)
             total_slots = len(MWA_ROLES) * len(DIVISION_SLOTS)
@@ -464,10 +523,15 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
             self._loaded_file_names[division] = Path(file_path).name
             self.file_labels[division].configure(text=Path(file_path).name, text_color=Color.TEXT_PRIMARY)
             record_upload(file_path, "RGD Coverage", division=division)
-            # Phase 1 of Work Distribution sync: retain the source file
-            # locally, alongside (never replacing) the existing parse
-            # above -- see app/work_distribution_upload_service.py.
-            store_work_distribution_upload(RGD, division, file_path)
+            # Retain the source file locally and push it to the sync
+            # manifest -- see app/work_distribution_sync_service.py.
+            # upload_and_sync re-validates internally (harmless, same
+            # file) and never auto-runs analysis on a LOCAL upload -- Run
+            # Analysis below stays the only trigger for this machine's own
+            # upload, exactly as before.
+            sync_result = upload_and_sync(slot_id_for(RGD, division), file_path)
+            if not sync_result.get("synced"):
+                messagebox.showwarning("Not Synced", sync_result.get("sync_error") or "This file was not synced to the cloud.")
 
             loaded_count = len(self._loaded_doctors)
             total_slots = len(DIVISION_SLOTS)
@@ -547,3 +611,134 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
             self._update_run_button_state()
 
         run_in_background(self, work, on_progress=on_progress, on_done=on_done)
+
+    # --- Sync check (banner) -- covers this page's 9 slots only; the
+    # other 3 (hierarchy) are ui/work_distribution_email_center_page.py's
+    # own banner, sharing the same underlying check_for_updates()/
+    # apply_pending_updates() pair (see app/work_distribution_sync_service.py).
+
+    def _run_check(self) -> None:
+        if self._checking:
+            return
+        self._checking = True
+        self._refresh_button.configure(state="disabled")
+
+        def work(_report_progress):
+            return check_for_updates()
+
+        def on_done(result, error):
+            self._checking = False
+            if self._refresh_button.winfo_exists():
+                self._refresh_button.configure(state="normal")
+            if error is not None:
+                logger.error(f"Work Distribution sync: check raised unexpectedly: {error!r}")
+                result = {"ok": False, "reason": "error"}
+
+            self._banner_dismissed = False
+            self._render_sync_status(result)
+            self._render_banner(result)
+            if result.get("ok"):
+                self.refresh_from_state()
+
+        run_in_background(self, work, on_done=on_done)
+
+    def _render_sync_status(self, result: dict) -> None:
+        if not self._sync_status_label.winfo_exists():
+            return
+        if not result.get("ok"):
+            reason = "Could not reach Supabase" if result.get("reason") == "offline" else "Last check failed"
+            self._sync_status_label.configure(text=f"⚠ {reason} -- showing this machine's last known state.")
+            return
+        page_changed = [c for c in (result.get("changed") or []) if c["slot_id"] in _PAGE_SLOTS]
+        self._sync_status_label.configure(
+            text="Synced." if not page_changed else f"{len(page_changed)} update(s) available below."
+        )
+
+    def _clear_banner(self) -> None:
+        for widget in self._banner_container.winfo_children():
+            widget.destroy()
+
+    def _render_banner(self, result: dict) -> None:
+        self._clear_banner()
+        if self._banner_dismissed or not result.get("ok"):
+            return
+        changed = [c for c in (result.get("changed") or []) if c["slot_id"] in _PAGE_SLOTS]
+        if not changed:
+            return
+
+        replacements = [c for c in changed if c["is_replacement"]]
+        first_fills = [c for c in changed if c["is_first_fill"]]
+
+        lines = []
+        for c in replacements:
+            lines.append(f"{SLOT_LABELS[c['slot_id']]} was replaced by {c['uploader_name']}.")
+        if first_fills:
+            lines.append(f"{len(first_fills)} new file{'s' if len(first_fills) != 1 else ''} available.")
+
+        banner = ctk.CTkFrame(self._banner_container, fg_color=Color.WARNING_SOFT, corner_radius=Radius.SM)
+        banner.pack(fill="x")
+        body = ctk.CTkFrame(banner, fg_color="transparent")
+        body.pack(fill="x", padx=Spacing.MD, pady=Spacing.SM)
+
+        text_col = ctk.CTkFrame(body, fg_color="transparent")
+        text_col.pack(side="left", fill="x", expand=True)
+        for line in lines:
+            ctk.CTkLabel(
+                text_col, text=f"⚠  {line}", font=Font.BODY, text_color=Color.WARNING, anchor="w",
+                wraplength=650, justify="left",
+            ).pack(anchor="w")
+
+        button_col = ctk.CTkFrame(body, fg_color="transparent")
+        button_col.pack(side="right")
+        PrimaryButton(
+            button_col, text="Pull Updates", command=lambda: self._on_pull_clicked([c["slot_id"] for c in changed])
+        ).pack(side="left", padx=(0, Spacing.SM))
+        ctk.CTkButton(
+            button_col, text="✕", width=28, height=28, fg_color="transparent",
+            text_color=Color.WARNING, hover_color=Color.WARNING_SOFT,
+            command=self._on_dismiss_banner,
+        ).pack(side="left")
+
+    def _on_dismiss_banner(self) -> None:
+        self._banner_dismissed = True
+        self._clear_banner()
+
+    def _on_pull_clicked(self, slot_ids: list[str]) -> None:
+        self._clear_banner()
+        ctk.CTkLabel(
+            self._banner_container, text="Pulling updates...", font=Font.BODY, text_color=Color.INFO, anchor="w"
+        ).pack(anchor="w")
+
+        def work(_report_progress):
+            return apply_pending_updates(slot_ids)
+
+        def on_done(result, error):
+            self._clear_banner()
+            if error is not None:
+                logger.error(f"Work Distribution sync: apply raised unexpectedly: {error!r}")
+                messagebox.showerror("Sync Failed", f"Could not apply updates.\n\n{error}")
+                self._run_check()
+                return
+
+            self.refresh_from_state()
+
+            problems = []
+            for f in result["failed"]:
+                problems.append(f"{SLOT_LABELS[f['slot_id']]}: {f['reason']}")
+            for v in result["version_blocked"]:
+                problems.append(
+                    f"{SLOT_LABELS[v['slot_id']]}: uploaded by a newer app version "
+                    f"({v['remote_version']}) than this one -- update the app to apply it."
+                )
+            if problems:
+                messagebox.showerror(
+                    "Some Updates Could Not Be Applied",
+                    "\n\n".join(problems) + "\n\nThese slots will show again next time you check.",
+                )
+
+            # Re-check: a partial failure leaves the failed slots in
+            # `changed` again on the next check, so the banner persists
+            # for exactly those.
+            self._run_check()
+
+        run_in_background(self, work, on_done=on_done)

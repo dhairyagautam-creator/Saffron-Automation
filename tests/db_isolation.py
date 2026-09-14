@@ -35,7 +35,19 @@ def isolate_database(monkeypatch):
     database. Returns the engine, for a caller that wants to seed rows
     into it directly. This is the ONLY place in the test suite that makes
     this guarantee -- every other test-local "in-memory session factory"
-    helper only ever covered the _Session half."""
+    helper only ever covered the _Session half.
+
+    `import database.models` below is NOT unused -- Base.metadata only
+    knows about a model class once its module has been imported somewhere
+    (SQLAlchemy's declarative registration is an import-time side effect),
+    and this function must not depend on some OTHER already-collected test
+    file having imported database.models first. Confirmed the hard way:
+    a test file whose own imports are all deferred inside test bodies (a
+    pattern used throughout this suite) hit "no such table" for a model
+    that genuinely exists in database/models.py, purely because nothing
+    had imported that module yet by the time create_all() ran here."""
+    import database.models  # noqa: F401
+
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     monkeypatch.setattr("database.connection._Session", sessionmaker(bind=engine, autoflush=False, autocommit=False))

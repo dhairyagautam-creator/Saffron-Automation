@@ -328,6 +328,33 @@ class WorkDistributionUploadSlot(Base):
     only_on_this_machine = Column(Boolean, nullable=False, default=False)
 
 
+class HierarchyUploadSlot(Base):
+    """One row per Work Distribution hierarchy retained-upload slot -- one
+    per division (Onyx/Guardians/Xandra; see
+    app/hierarchy_upload_service.py's slot_id_for()), NOT one per
+    (report_type, division) the way WorkDistributionUploadSlot is -- there
+    is exactly one hierarchy workbook per division. Mirrors
+    WorkDistributionUploadSlot's shape/role exactly.
+
+    The uploaded file itself lives under app.config.HIERARCHY_UPLOADS_DIR,
+    never in git and never in this row -- only its path is recorded here.
+    This table is retention bookkeeping only; the division's own
+    workbook_connections row (app.workbook_connections, module_key=
+    "work_distribution") is what app.hierarchy_parser.refresh_hierarchy()
+    actually reads from -- a successful sync pull for this slot updates
+    BOTH (see app/work_distribution_sync_service.py)."""
+
+    __tablename__ = "hierarchy_upload_slots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    slot_id = Column(String, nullable=False, unique=True)
+    filename = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    uploaded_by = Column(String, nullable=True)
+    only_on_this_machine = Column(Boolean, nullable=False, default=False)
+
+
 class ReviewCoverageParameter(Base):
     """A single named setting for the Coverage Summary automated-email
     workflow (see app/review_coverage_email_settings_service.py) --

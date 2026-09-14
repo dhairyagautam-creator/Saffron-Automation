@@ -104,6 +104,14 @@ INVENTORY_UPLOADS_DIR = DATA_DIR / "inventory_uploads"
 # (.gitignore), only the file path + metadata are ever recorded in the
 # database.
 WORK_DISTRIBUTION_UPLOADS_DIR = DATA_DIR / "work_distribution_uploads"
+# Physical copies of Work Distribution's hierarchy workbook uploads -- one
+# per division (Onyx/Guardians/Xandra), see app/hierarchy_upload_service.py.
+# Previously hierarchy connections stored only a raw OS path (see
+# app/workbook_connections.py) with no local copy at all; this is that
+# missing retention layer, same convention as the other *_UPLOADS_DIR
+# constants above: never committed (.gitignore), only the file path +
+# metadata are ever recorded in the database.
+HIERARCHY_UPLOADS_DIR = DATA_DIR / "hierarchy_uploads"
 
 if DATA_DIR_ERROR is None:
     try:
@@ -113,6 +121,7 @@ if DATA_DIR_ERROR is None:
         REVIEW_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         INVENTORY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         WORK_DISTRIBUTION_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        HIERARCHY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         DATA_DIR_ERROR = f"Could not create application data folders under {DATA_DIR}: {exc!r}"
 

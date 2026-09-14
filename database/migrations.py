@@ -873,6 +873,20 @@ def ensure_work_distribution_upload_slots_table() -> None:
         logger.info(f"Migration: created '{WorkDistributionUploadSlot.__tablename__}' table")
 
 
+def ensure_hierarchy_upload_slots_table() -> None:
+    """Create hierarchy_upload_slots -- Work Distribution hierarchy sync's
+    local retention slots (see database/models.py's HierarchyUploadSlot
+    docstring). init_db()'s Base.metadata.create_all() already creates
+    this on a brand-new install; this covers every existing install that
+    ran init_db() before this model existed."""
+    from database.models import HierarchyUploadSlot
+
+    engine = get_config_engine()
+    if not inspect(engine).has_table(HierarchyUploadSlot.__tablename__):
+        HierarchyUploadSlot.__table__.create(bind=engine)
+        logger.info(f"Migration: created '{HierarchyUploadSlot.__tablename__}' table")
+
+
 def ensure_workbook_connections_module_key_column() -> None:
     """Add module_key to workbook_connections for the Employee Hierarchy
     3-way split (Path Validator / Work Distribution / Review System each
@@ -1146,6 +1160,7 @@ def run_startup_migrations() -> None:
     ensure_inventory_upload_slots_table()
     ensure_workbook_connections_module_key_column()
     ensure_work_distribution_upload_slots_table()
+    ensure_hierarchy_upload_slots_table()
     ensure_work_distribution_doctors_bm_abm_code_columns()
     ensure_work_distribution_findings_employee_code_column()
     ensure_app_settings_inventory_reset_column()
