@@ -24,7 +24,6 @@ that frame, never the root itself -- Frames have no such fragility.
 
 from datetime import datetime, timedelta
 
-import customtkinter as ctk
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -46,11 +45,10 @@ def _isolated_db(monkeypatch):
 
 
 @pytest.fixture(scope="module")
-def _tk_root():
-    root = ctk.CTk()
-    root.withdraw()
-    yield root
-    root.destroy()
+def _tk_root(_shared_tk_root):
+    # See tests/conftest.py's _shared_tk_root docstring -- this reuses the
+    # one session-wide root instead of creating/destroying its own.
+    return _shared_tk_root
 
 
 def _widget_texts(widget) -> list[str]:

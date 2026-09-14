@@ -12,7 +12,6 @@ an earlier version of test_hierarchy_module_split.py write fake rows into
 this project's real production database).
 """
 
-import customtkinter as ctk
 import pytest
 
 from tests.db_isolation import isolate_database
@@ -24,11 +23,10 @@ def _isolated_db(monkeypatch):
 
 
 @pytest.fixture(scope="module")
-def _tk_root():
-    root = ctk.CTk()
-    root.withdraw()
-    yield root
-    root.destroy()
+def _tk_root(_shared_tk_root):
+    # See tests/conftest.py's _shared_tk_root docstring -- this reuses the
+    # one session-wide root instead of creating/destroying its own.
+    return _shared_tk_root
 
 
 def test_organization_data_page_uses_path_validator_module_key(_tk_root):
