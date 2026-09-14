@@ -97,6 +97,13 @@ REVIEW_UPLOADS_DIR = DATA_DIR / "review_uploads"
 # Same convention as REVIEW_UPLOADS_DIR above: never committed (.gitignore),
 # only the file path + metadata are ever recorded in the database.
 INVENTORY_UPLOADS_DIR = DATA_DIR / "inventory_uploads"
+# Physical copies of Work Distribution's retained uploads -- one file per
+# (report_type, division) slot: RGD Coverage x3 divisions, ABM x3, RBM x3
+# (9 total) -- see app/work_distribution_upload_service.py. Same convention
+# as REVIEW_UPLOADS_DIR/INVENTORY_UPLOADS_DIR above: never committed
+# (.gitignore), only the file path + metadata are ever recorded in the
+# database.
+WORK_DISTRIBUTION_UPLOADS_DIR = DATA_DIR / "work_distribution_uploads"
 
 if DATA_DIR_ERROR is None:
     try:
@@ -105,6 +112,7 @@ if DATA_DIR_ERROR is None:
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         REVIEW_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         INVENTORY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        WORK_DISTRIBUTION_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         DATA_DIR_ERROR = f"Could not create application data folders under {DATA_DIR}: {exc!r}"
 

@@ -300,6 +300,34 @@ class InventoryUploadSlot(Base):
     thresholds_generated_at = Column(DateTime, nullable=True)
 
 
+class WorkDistributionUploadSlot(Base):
+    """One row per Work Distribution retained-upload slot -- one per
+    (report_type, division): RGD Coverage x3 divisions, ABM x3, RBM x3 (9
+    total; see app/work_distribution_upload_service.py's slot_id_for()).
+    Mirrors InventoryUploadSlot's shape/role exactly (Phase 1 of Work
+    Distribution sync -- "files are truth, rows are a disposable local
+    cache": this table + the retained file are what a future sync phase
+    will build a manifest slot and a recompute-from-file gate on top of;
+    no manifest/Storage/sync logic exists yet, retention only).
+
+    The uploaded file itself lives under
+    app.config.WORK_DISTRIBUTION_UPLOADS_DIR, never in git and never in
+    this row -- only its path is recorded here. An invalid upload is never
+    stored here (same convention as InventoryUploadSlot) -- the existing
+    RGD/ABM/RBM upload flows already reject an invalid file outright
+    before retention would ever be reached."""
+
+    __tablename__ = "work_distribution_upload_slots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    slot_id = Column(String, nullable=False, unique=True)
+    filename = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    uploaded_by = Column(String, nullable=True)
+    only_on_this_machine = Column(Boolean, nullable=False, default=False)
+
+
 class ReviewCoverageParameter(Base):
     """A single named setting for the Coverage Summary automated-email
     workflow (see app/review_coverage_email_settings_service.py) --

@@ -51,6 +51,7 @@ from app.manager_work_allocation_service import process_manager_work_allocation_
 from app.work_distribution_parser import SUPPORTED_EXTENSIONS, parse_work_distribution_report
 from app.work_distribution_service import process_work_distribution_report
 from app.work_distribution_upload_log_service import record_upload
+from app.work_distribution_upload_service import ABM, RBM, RGD, store_work_distribution_upload
 from ui.background_task import run_in_background
 from ui.components import CollapsibleSection, PrimaryButton, SectionHeader
 from ui.icons import get_icon
@@ -295,6 +296,10 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
             self._mwa_records[role][division] = parse_result["records"]
             self._mwa_file_labels[key].configure(text=Path(file_path).name, text_color=Color.TEXT_PRIMARY)
             record_upload(file_path, f"Manager Work Allocation ({role})", division=division)
+            # Phase 1 of Work Distribution sync: retain the source file
+            # locally, alongside (never replacing) the existing parse
+            # above -- see app/work_distribution_upload_service.py.
+            store_work_distribution_upload(ABM if role == "ABM" else RBM, division, file_path)
 
             loaded_count = sum(len(self._mwa_records[r]) for r in MWA_ROLES)
             total_slots = len(MWA_ROLES) * len(DIVISION_SLOTS)
@@ -459,6 +464,10 @@ class WorkDistributionUploadPage(ctk.CTkFrame):
             self._loaded_file_names[division] = Path(file_path).name
             self.file_labels[division].configure(text=Path(file_path).name, text_color=Color.TEXT_PRIMARY)
             record_upload(file_path, "RGD Coverage", division=division)
+            # Phase 1 of Work Distribution sync: retain the source file
+            # locally, alongside (never replacing) the existing parse
+            # above -- see app/work_distribution_upload_service.py.
+            store_work_distribution_upload(RGD, division, file_path)
 
             loaded_count = len(self._loaded_doctors)
             total_slots = len(DIVISION_SLOTS)
