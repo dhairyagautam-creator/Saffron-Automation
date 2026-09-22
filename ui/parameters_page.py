@@ -1,38 +1,40 @@
-"""Parameters page: a grouped settings panel for editing rule thresholds and
-dashboard display settings.
+"""Parameters page: a grouped settings panel for editing rule thresholds.
 
 Values are persisted in the `rule_parameters` table, not in code, so
-changing a value here affects the next rule run / dashboard render
-immediately. Each top-level entry in RULE_SECTIONS renders as one
-collapsible Card — adding a future section (e.g. "Monthly Review
-Parameters") is just one more entry here; no other code needs to change.
+changing a value here affects the next rule run immediately. Each
+top-level entry in RULE_SECTIONS renders as one collapsible Card —
+adding a future section is just one more entry here; no other code needs
+to change.
 
 Save writes straight to the local `rule_parameters` cache -- every place
 that reads a threshold fetches fresh on its own next call, so a saved
-change takes effect immediately, no restart required.
-"""
+change takes effect immediately, no restart required, and (parameter
+sync project) also pushes the section's full current config to the
+cloud immediately -- see _on_save_clicked.
 
-import re
-from tkinter import colorchooser
+The former "Dashboard Parameters" section (11 fields controlling colors/
+thresholds for app/dashboard_service.py and ui/analytics_dashboard_page.py)
+was removed here -- both of those files were already gone from the
+codebase with no UI left anywhere to reach them; this page had kept
+editing and saving their settings anyway. See
+database/migrations.py's drop_dashboard_rule_parameters() for the
+matching one-time cleanup of the 11 now-orphaned rows this left behind.
+"""
 
 import customtkinter as ctk
 
-from app.rule_parameters import DEFAULT_PARAMETERS, get_parameters, set_parameter
+from app.parameter_sync_service import check_for_config_update, try_push_and_apply
+from app.rule_parameters import DEFAULT_PARAMETERS, MODULE_KEY, apply_full_configuration, get_full_configuration, get_parameters, set_parameter
 from ui.components import Card, PrimaryButton, SecondaryButton, SectionHeader
+from ui.parameter_sync_panel import ParameterSyncPanel
 from ui.theme import Color, Font, Spacing
 
-# Hidden sections. Hospital Suppression is an always-on production pipeline
-# stage (see app/notification_service.py), but per the "no hospital
-# configuration screens in production" requirement its search-radius knob is
-# not shown; it uses the 100m default from
-# app/rule_parameters.DEFAULT_PARAMETERS["HOSPITAL_SUPPRESSION"].
-HIDDEN_SECTIONS = {"HOSPITAL_SUPPRESSION"}
-
-DIVISION_SORT_OPTIONS = [
-    ("employees_flagged", "Employees Flagged"),
-    ("flag_rate", "Flag Rate"),
-    ("employees_analysed", "Employees Analysed"),
-]
+# Hidden sections. Currently none -- Hospital Suppression's search-radius
+# knob (see app/notification_service.py) used to be excluded here per a
+# "no hospital configuration screens in production" requirement; that
+# requirement no longer applies, so it now has its own section below like
+# every other rule.
+HIDDEN_SECTIONS: set[str] = set()
 
 RULE_SECTIONS = [
     {
@@ -113,146 +115,6 @@ RULE_SECTIONS = [
             },
         ],
     },
-    {
-        "rule_name": "DASHBOARD",
-        "title": "Dashboard Parameters",
-        "groups": [
-            {
-                "title": "Compliance Thresholds",
-                "fields": [
-                    {
-                        "name": "compliance_high_threshold",
-                        "label": "Compliance High Threshold",
-                        "description": (
-                            "Today's Compliance % badge on the Analytics Dashboard shows "
-                            "green at or above this percentage."
-                        ),
-                        "type": "slider",
-                        "min": 0,
-                        "max": 100,
-                        "step": 1,
-                        "unit": "%",
-                    },
-                    {
-                        "name": "compliance_mid_threshold",
-                        "label": "Compliance Mid Threshold",
-                        "description": (
-                            "Below the high threshold but at or above this percentage, "
-                            "the badge shows yellow. Below this, it shows red."
-                        ),
-                        "type": "slider",
-                        "min": 0,
-                        "max": 100,
-                        "step": 1,
-                        "unit": "%",
-                    },
-                ],
-            },
-            {
-                "title": "Heat Map Colours",
-                "fields": [
-                    {
-                        "name": "map_color_no_presence",
-                        "label": "No Operational Presence",
-                        "description": (
-                            "Map color for a state with zero employees analysed today -- i.e. Saffron "
-                            "has no branches or staff there. Kept distinct from 'No Findings' so the "
-                            "map never implies a state was checked and found clean when it simply "
-                            "wasn't part of today's run."
-                        ),
-                        "type": "color",
-                    },
-                    {
-                        "name": "map_color_no_findings",
-                        "label": "No Findings",
-                        "description": (
-                            "Map color for a state where employees WERE analysed today but none were "
-                            "flagged."
-                        ),
-                        "type": "color",
-                    },
-                    {
-                        "name": "map_color_low",
-                        "label": "Low Findings",
-                        "description": "Map color for a state at or below the Low Tier Max, below.",
-                        "type": "color",
-                    },
-                    {
-                        "name": "map_color_moderate",
-                        "label": "Moderate Findings",
-                        "description": (
-                            "Map color for a state above the Low Tier Max and at or below "
-                            "the Moderate Tier Max, below."
-                        ),
-                        "type": "color",
-                    },
-                    {
-                        "name": "map_color_high",
-                        "label": "High Findings",
-                        "description": "Map color for a state above the Moderate Tier Max.",
-                        "type": "color",
-                    },
-                    {
-                        "name": "map_tier_low_max",
-                        "label": "Low Tier Max",
-                        "description": (
-                            "States with this many flagged employees or fewer use the "
-                            "Low Findings color."
-                        ),
-                        "type": "slider",
-                        "min": 0,
-                        "max": 50,
-                        "step": 1,
-                        "unit": " employees",
-                    },
-                    {
-                        "name": "map_tier_moderate_max",
-                        "label": "Moderate Tier Max",
-                        "description": (
-                            "States above the Low Tier Max with this many flagged employees "
-                            "or fewer use the Moderate Findings color. Above this uses High."
-                        ),
-                        "type": "slider",
-                        "min": 0,
-                        "max": 50,
-                        "step": 1,
-                        "unit": " employees",
-                    },
-                ],
-            },
-            {
-                "title": "Division Performance",
-                "fields": [
-                    {
-                        "name": "division_sort_mode",
-                        "label": "Sort Divisions By",
-                        "description": (
-                            "Controls the order divisions are shown in on the Division "
-                            "Performance chart."
-                        ),
-                        "type": "choice",
-                        "options": DIVISION_SORT_OPTIONS,
-                    },
-                ],
-            },
-            {
-                "title": "Cluster Distribution Buckets",
-                "fields": [
-                    {
-                        "name": "cluster_bucket_edges",
-                        "label": "Bucket Boundaries",
-                        "description": (
-                            "Ascending percentage boundaries defining the buckets shown on "
-                            "the Cluster Activity Distribution chart (e.g. 30, 40, 50 ... "
-                            "creates buckets 30-40%, 40-50%, ...)."
-                        ),
-                        "type": "bucket_edges",
-                        "count": 8,
-                    },
-                ],
-            },
-        ],
-    },
 ]
 
 
@@ -276,8 +138,16 @@ class ParametersPage(ctk.CTkFrame):
         top_bar.pack(fill="x", pady=(0, Spacing.LG))
 
         SectionHeader(
-            top_bar, "Parameters", "Tune every rule's thresholds and dashboard settings without touching any code"
+            top_bar, "Parameters", "Tune every rule's thresholds without touching any code"
         ).pack(side="left", anchor="w")
+
+        self._sync_panel = ParameterSyncPanel(
+            outer,
+            check_fn=lambda: check_for_config_update(MODULE_KEY, get_full_configuration()),
+            apply_fn=self._on_sync_apply,
+            on_applied=self._load_values,
+        )
+        self._sync_panel.pack(fill="x", pady=(0, Spacing.MD))
 
         self._active_sections = [s for s in RULE_SECTIONS if s["rule_name"] not in HIDDEN_SECTIONS]
 
@@ -382,12 +252,6 @@ class ParametersPage(ctk.CTkFrame):
         key = (rule_name, spec["name"])
         if field_type == "slider":
             self._build_slider_field(parent, key, spec)
-        elif field_type == "color":
-            self._build_color_field(parent, key, spec)
-        elif field_type == "choice":
-            self._build_choice_field(parent, key, spec)
-        elif field_type == "bucket_edges":
-            self._build_bucket_edges_field(parent, key, spec)
         else:
             raise ValueError(f"Unknown parameter field type: {field_type!r}")
 
@@ -419,81 +283,12 @@ class ParametersPage(ctk.CTkFrame):
         rounded = round(value / spec["step"]) * spec["step"]
         self._controls[key]["value_label"].configure(text=f"{int(rounded)}{spec['unit']}")
 
-    def _build_color_field(self, parent, key: tuple[str, str], spec: dict) -> None:
-        self._label_and_description(parent, spec)
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x")
-
-        swatch = ctk.CTkButton(
-            row,
-            text="",
-            width=48,
-            height=28,
-            corner_radius=6,
-            fg_color=Color.BORDER,
-            hover_color=Color.BORDER,
-            border_width=1,
-            border_color=Color.BORDER,
-            command=lambda k=key: self._on_color_swatch_clicked(k),
-        )
-        swatch.pack(side="left")
-
-        hex_label = ctk.CTkLabel(row, text="", font=Font.BODY_BOLD, text_color=Color.TEXT_SECONDARY)
-        hex_label.pack(side="left", padx=(Spacing.SM, 0))
-
-        self._controls[key] = {
-            "type": "color",
-            "swatch": swatch,
-            "hex_label": hex_label,
-            "value": Color.BORDER,
-        }
-
-    def _on_color_swatch_clicked(self, key: tuple[str, str]) -> None:
-        control = self._controls[key]
-        _rgb, hex_value = colorchooser.askcolor(color=control["value"], title="Choose a color")
-        if not hex_value:
-            return
-        control["value"] = hex_value
-        control["swatch"].configure(fg_color=hex_value, hover_color=hex_value)
-        control["hex_label"].configure(text=hex_value.upper())
-
-    def _build_choice_field(self, parent, key: tuple[str, str], spec: dict) -> None:
-        self._label_and_description(parent, spec)
-        options = spec["options"]
-        labels = [label for _value, label in options]
-
-        menu = ctk.CTkOptionMenu(
-            parent,
-            values=labels,
-            fg_color=Color.SURFACE,
-            button_color=Color.PRIMARY,
-            button_hover_color=Color.PRIMARY_HOVER,
-            text_color=Color.TEXT_PRIMARY,
-        )
-        menu.pack(anchor="w")
-        self._controls[key] = {"type": "choice", "widget": menu, "options": options}
-
-    def _build_bucket_edges_field(self, parent, key: tuple[str, str], spec: dict) -> None:
-        self._label_and_description(parent, spec)
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x")
-
-        entries = []
-        count = spec.get("count", 8)
-        for i in range(count):
-            if i > 0:
-                ctk.CTkLabel(row, text="–", text_color=Color.TEXT_MUTED, width=12).pack(side="left")
-            entry = ctk.CTkEntry(row, width=55, justify="center")
-            entry.pack(side="left")
-            entries.append(entry)
-
-        self._controls[key] = {"type": "bucket_edges", "entries": entries}
-
     # --- Load / save -------------------------------------------------------
 
     def on_show(self) -> None:
         """Called by MainWindow every time this page becomes visible."""
         self._load_values()
+        self._sync_panel.check_now()
 
     def _load_values(self) -> None:
         for section in self._active_sections:
@@ -518,20 +313,6 @@ class ParametersPage(ctk.CTkFrame):
             number = max(spec["min"], min(spec["max"], number))
             control["slider"].set(number)
             control["value_label"].configure(text=f"{int(number)}{spec['unit']}")
-        elif field_type == "color":
-            hex_value = raw or DEFAULT_PARAMETERS[rule_name][name]
-            control["value"] = hex_value
-            control["swatch"].configure(fg_color=hex_value, hover_color=hex_value)
-            control["hex_label"].configure(text=hex_value.upper())
-        elif field_type == "choice":
-            value_to_label = dict(control["options"])
-            control["widget"].set(value_to_label.get(raw, control["options"][0][1]))
-        elif field_type == "bucket_edges":
-            parts = [p.strip() for p in str(raw).split(",")] if raw else []
-            for i, entry in enumerate(control["entries"]):
-                entry.delete(0, "end")
-                if i < len(parts):
-                    entry.insert(0, parts[i])
 
     def _on_save_clicked(self) -> None:
         errors = self._validate_all_fields()
@@ -539,14 +320,36 @@ class ParametersPage(ctk.CTkFrame):
             self._set_confirmation(errors[0], Color.ERROR)
             return
 
+        # Start from the current full config (so HOSPITAL_SUPPRESSION's
+        # own value -- hidden from this page's UI, see HIDDEN_SECTIONS --
+        # is still included in what gets pushed) and overlay only the
+        # sections this page actually edited.
+        new_config = get_full_configuration()
         for section in self._active_sections:
             rule_name = section["rule_name"]
             for spec in self._all_fields(section):
                 name = spec["name"]
                 value_str = self._serialize_field_value(self._controls[(rule_name, name)], spec)
-                set_parameter(rule_name, name, value_str)
+                new_config[rule_name][name] = value_str
 
-        self._set_confirmation("Saved.", Color.SUCCESS)
+        ok, error = try_push_and_apply(MODULE_KEY, new_config, self._apply_config)
+        if not ok:
+            self._set_confirmation(error, Color.ERROR)
+            return
+
+        self._set_confirmation("Saved and synced.", Color.SUCCESS)
+
+    def _apply_config(self, config: dict) -> None:
+        """apply_fn for try_push_and_apply -- rule_parameters' own
+        apply_full_configuration() already knows how to validate+write a
+        full config dict; its (bool, str|None) return is discarded here
+        since a config built entirely from this page's own just-validated
+        UI values can never fail that validation."""
+        apply_full_configuration(config)
+
+    def _on_sync_apply(self, check_result: dict) -> tuple[bool, str | None]:
+        ok, error = apply_full_configuration(check_result["config"])
+        return ok, error
 
     # --- Helpers: validation, busy/status state --
 
@@ -565,25 +368,6 @@ class ParametersPage(ctk.CTkFrame):
                     value = control["slider"].get()
                     if not (spec["min"] <= value <= spec["max"]):
                         errors.append(f"{spec['label']} must be between {spec['min']} and {spec['max']}.")
-                elif field_type == "color":
-                    if not re.match(r"^#[0-9A-Fa-f]{6}$", control["value"] or ""):
-                        errors.append(f"{spec['label']} must be a valid color.")
-                elif field_type == "choice":
-                    label_to_value = {label: value for value, label in control["options"]}
-                    if control["widget"].get() not in label_to_value:
-                        errors.append(f"{spec['label']} has an invalid selection.")
-                elif field_type == "bucket_edges":
-                    raw_values = [entry.get().strip() for entry in control["entries"]]
-                    if any(not value for value in raw_values):
-                        errors.append(f"{spec['label']}: all {len(raw_values)} boundary values are required.")
-                    else:
-                        try:
-                            numbers = [float(value) for value in raw_values]
-                        except ValueError:
-                            errors.append(f"{spec['label']} values must all be numbers.")
-                        else:
-                            if numbers != sorted(numbers):
-                                errors.append(f"{spec['label']} values must be in ascending order.")
         return errors
 
     def _set_confirmation(self, text: str, color: str) -> None:
@@ -594,13 +378,6 @@ class ParametersPage(ctk.CTkFrame):
         if field_type == "slider":
             value = round(control["slider"].get() / spec["step"]) * spec["step"]
             return str(int(value))
-        if field_type == "color":
-            return control["value"]
-        if field_type == "choice":
-            label_to_value = {label: value for value, label in control["options"]}
-            return label_to_value.get(control["widget"].get(), control["options"][0][0])
-        if field_type == "bucket_edges":
-            return ",".join(entry.get().strip() for entry in control["entries"])
         raise ValueError(f"Unknown parameter field type: {field_type!r}")
 
     def _on_reset_clicked(self) -> None:

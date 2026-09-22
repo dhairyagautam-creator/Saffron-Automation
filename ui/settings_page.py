@@ -151,15 +151,9 @@ class SettingsPage(ctk.CTkFrame):
         self.geoapify_result_label.configure(text="")
 
     def _on_save_clicked(self) -> None:
-        # Automatic sending no longer exists as a concept (Phase 1 email
-        # authority work -- see ui/findings_page.py's Send Emails button,
-        # the only place manager emails are ever sent from now). The
-        # automatic_sending_enabled column is passed False and otherwise
-        # unread by anything; left in place rather than migrated away.
         save_settings(
             self.sender_entry.get().strip(),
             self.password_entry.get().strip(),
-            False,
         )
         self.result_label.configure(text="Email settings saved successfully.", text_color=Color.SUCCESS)
 

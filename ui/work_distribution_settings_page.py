@@ -44,45 +44,55 @@ import customtkinter as ctk
 from app.manager_work_allocation_parameters_service import (
     get_minimum_joint_working_days,
     get_rbm_flag_tiers,
-    set_minimum_joint_working_days,
-    set_rbm_flag_tiers,
 )
 from app.manager_work_allocation_rbm_service import validate_rbm_flag_tiers
+from app.parameter_sync_service import check_for_config_update, try_push_and_apply
 from app.work_distribution_parameters_service import (
+    ABM_COVERAGE_DOCTORS,
+    ABM_MISSED_DOCTORS,
+    BM_COVERAGE_PERCENT,
+    BM_MINIMUM_CALLS,
+    BM_MISSED_DOCTOR_PERCENT,
+    BM_TARGET_CALLS,
+    MODULE_KEY,
+    apply_full_configuration,
     get_abm_coverage_doctors,
     get_abm_missed_doctors,
     get_bm_coverage_percent,
     get_bm_minimum_calls,
     get_bm_missed_doctor_percent,
     get_bm_target_calls,
-    set_abm_coverage_doctors,
-    set_abm_missed_doctors,
-    set_bm_coverage_percent,
-    set_bm_minimum_calls,
-    set_bm_missed_doctor_percent,
-    set_bm_target_calls,
+    get_full_configuration,
 )
+from app.manager_work_allocation_parameters_service import MINIMUM_JOINT_WORKING_DAYS, RBM_FLAG_TIERS
 from ui.components import Card, CollapsibleSection, PrimaryButton, SectionHeader
+from ui.parameter_sync_panel import ParameterSyncPanel
 from ui.theme import Color, Font, Spacing
 
-# (label, get_fn, set_fn) -- each field is loaded from and saved straight
-# to app.work_distribution_parameters_service, never a hardcoded default.
+# (label, parameter_key, get_fn) -- each field is loaded from
+# app.work_distribution_parameters_service; saving now goes through the
+# shared push-then-apply flow in _save_fields below (parameter sync
+# project) rather than each field's own set_fn directly, so parameter_key
+# (not a setter) is what identifies which config key to update.
 BM_FIELDS = [
-    ("Minimum Calls", get_bm_minimum_calls, set_bm_minimum_calls),
-    ("Target Calls", get_bm_target_calls, set_bm_target_calls),
-    ("Missed Doctor %", get_bm_missed_doctor_percent, set_bm_missed_doctor_percent),
-    ("Coverage %", get_bm_coverage_percent, set_bm_coverage_percent),
+    ("Minimum Calls", BM_MINIMUM_CALLS, get_bm_minimum_calls),
+    ("Target Calls", BM_TARGET_CALLS, get_bm_target_calls),
+    ("Missed Doctor %", BM_MISSED_DOCTOR_PERCENT, get_bm_missed_doctor_percent),
+    ("Coverage %", BM_COVERAGE_PERCENT, get_bm_coverage_percent),
 ]
 ABM_FIELDS = [
-    ("Missed Doctors", get_abm_missed_doctors, set_abm_missed_doctors),
-    ("Doctors with <2 Visits", get_abm_coverage_doctors, set_abm_coverage_doctors),
+    ("Missed Doctors", ABM_MISSED_DOCTORS, get_abm_missed_doctors),
+    ("Doctors with <2 Visits", ABM_COVERAGE_DOCTORS, get_abm_coverage_doctors),
 ]
 
 # Manager Work Allocation's own ABM engine settings -- backed by
 # app.manager_work_allocation_parameters_service, a completely separate
-# parameter store from RGD Coverage's WorkDistributionParameter above.
+# LOCAL parameter store from RGD Coverage's WorkDistributionParameter
+# above, but synced together under the same shared "work_distribution"
+# module_configurations blob (see app.work_distribution_parameters_service.
+# get_full_configuration()).
 MWA_ABM_FIELDS = [
-    ("Minimum Joint Working Days", get_minimum_joint_working_days, set_minimum_joint_working_days),
+    ("Minimum Joint Working Days", MINIMUM_JOINT_WORKING_DAYS, get_minimum_joint_working_days),
 ]
 
 
@@ -107,6 +117,7 @@ class WorkDistributionSettingsPage(ctk.CTkFrame):
         elsewhere (or on a previous visit) rather than showing stale
         widget state."""
         self._load_all()
+        self._sync_panel.check_now()
 
     def _build_widgets(self) -> None:
         outer = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -115,6 +126,14 @@ class WorkDistributionSettingsPage(ctk.CTkFrame):
         SectionHeader(
             outer, "Work Distribution Settings", "KPI parameters for monthly doctor coverage"
         ).pack(anchor="w", pady=(0, Spacing.LG))
+
+        self._sync_panel = ParameterSyncPanel(
+            outer,
+            check_fn=lambda: check_for_config_update(MODULE_KEY, get_full_configuration()),
+            apply_fn=lambda result: apply_full_configuration(result["config"]),
+            on_applied=self._load_all,
+        )
+        self._sync_panel.pack(fill="x", pady=(0, Spacing.MD))
 
         rgd_section = CollapsibleSection(outer, "RGD Coverage", expanded=True)
         rgd_section.pack(fill="x", pady=(0, Spacing.LG))
@@ -277,7 +296,7 @@ class WorkDistributionSettingsPage(ctk.CTkFrame):
     # --- Load / Save -------------------------------------------------------
 
     def _load_all(self) -> None:
-        for label, get_fn, _set_fn in BM_FIELDS + ABM_FIELDS + MWA_ABM_FIELDS:
+        for label, _key, get_fn in BM_FIELDS + ABM_FIELDS + MWA_ABM_FIELDS:
             entry = self._entries[label]
             entry.delete(0, "end")
             entry.insert(0, _format_value(get_fn()))
@@ -302,9 +321,14 @@ class WorkDistributionSettingsPage(ctk.CTkFrame):
         separately by RGD Coverage's own Save (BM_FIELDS + ABM_FIELDS) and
         Manager Work Allocation ABM Settings' own Save (MWA_ABM_FIELDS), so
         clicking one section's Save never touches the other section's
-        values, per explicit instruction not to modify RGD Coverage."""
+        OWN widget values (per explicit instruction not to modify RGD
+        Coverage). Both still push the FULL shared "work_distribution"
+        config afterward (parameter sync project) -- get_full_configuration()
+        already combines both local tables, so whichever section's Save
+        was clicked, the other section's current values are included
+        unchanged in what gets pushed, never dropped from the blob."""
         parsed: dict = {}
-        for label, _get_fn, set_fn in fields:
+        for label, key, _get_fn in fields:
             raw = self._entries[label].get().strip()
             try:
                 value = float(raw)
@@ -316,10 +340,16 @@ class WorkDistributionSettingsPage(ctk.CTkFrame):
                     text_color=Color.ERROR,
                 )
                 return
-            parsed[label] = (set_fn, value)
+            parsed[key] = value
 
-        for set_fn, value in parsed.values():
-            set_fn(_format_value(value))
+        new_config = get_full_configuration()
+        for key, value in parsed.items():
+            new_config[key] = _format_value(value)
+
+        ok, error = try_push_and_apply(MODULE_KEY, new_config, apply_full_configuration)
+        if not ok:
+            status_label.configure(text=error, text_color=Color.ERROR)
+            return
 
         self._load_all()
         status_label.configure(text=success_message, text_color=Color.SUCCESS)
@@ -388,9 +418,15 @@ class WorkDistributionSettingsPage(ctk.CTkFrame):
             self.rbm_tiers_status_label.configure(text=" ".join(errors), text_color=Color.ERROR)
             return
 
-        set_rbm_flag_tiers(parsed_tiers)
+        new_config = get_full_configuration()
+        new_config[RBM_FLAG_TIERS] = parsed_tiers
+        ok, error = try_push_and_apply(MODULE_KEY, new_config, apply_full_configuration)
+        if not ok:
+            self.rbm_tiers_status_label.configure(text=error, text_color=Color.ERROR)
+            return
+
         self._load_rbm_tiers()
         self.rbm_tiers_status_label.configure(
-            text="Saved. Takes effect the next time a Manager Work Allocation report is uploaded.",
+            text="Saved and synced. Takes effect the next time a Manager Work Allocation report is uploaded.",
             text_color=Color.SUCCESS,
         )

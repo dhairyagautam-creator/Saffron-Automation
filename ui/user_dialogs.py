@@ -29,10 +29,10 @@ from ui.components import Card, PrimaryButton, SecondaryButton
 from ui.theme import Color, Font, Radius, Spacing
 
 # Modules that currently have a real send function to gate authority over.
-# Review System is excluded -- being redesigned first, wired in later with
-# no changes needed here. Payment Analytics and User Management are
-# excluded -- no send capability exists to grant authority over at all.
-_EMAIL_CAPABLE_MODULE_KEYS = frozenset({"employee_module", "inventory_module", "work_distribution"})
+# Review System's own email rework wired it in here -- Payment Analytics
+# and User Management remain excluded -- no send capability exists to
+# grant authority over at all.
+_EMAIL_CAPABLE_MODULE_KEYS = frozenset({"employee_module", "inventory_module", "review_system", "work_distribution"})
 
 
 def _center_on_parent(dialog, parent) -> None:

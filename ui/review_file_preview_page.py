@@ -29,11 +29,6 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from app.config import REPORTS_DIR
-from app.review_coverage_email_settings_service import (
-    is_automatic_sending_enabled as coverage_automatic_sending_enabled,
-    set_automatic_sending_enabled as set_coverage_automatic_sending_enabled,
-)
-from app.review_coverage_notification_service import build_notification_batch, send_notification_batch
 from app.review_coverage_service import coverage_prerequisites_ready, generate_coverage_summary
 from app.review_export_service import export_all_divisions
 from app.review_opus_mapping import OPUS_HQ_BLOCKS_BY_DIVISION
@@ -254,9 +249,6 @@ class ReviewFilePreviewPage(ctk.CTkFrame):
         self._status_label = ctk.CTkLabel(self._body_container, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED)
         self._status_label.pack(anchor="w", pady=(0, Spacing.SM))
 
-        if report_type == "Coverage Summary":
-            self._render_coverage_email_controls(division)
-
         preview_card = Card(self._body_container)
         preview_card.pack(fill="both", expand=True)
         preview_body = ctk.CTkFrame(preview_card, fg_color="transparent")
@@ -305,67 +297,6 @@ class ReviewFilePreviewPage(ctk.CTkFrame):
             values = tuple(row[k] for k in identity_keys) + tuple(row["months"]) + tuple(row[k] for k in trailing_keys)
             tag = config["row_tag_fn"](row)
             self._preview_tree.insert("", "end", values=values, tags=(tag,) if tag else ())
-
-    # --- Coverage Summary automated email workflow --------------------------
-
-    def _render_coverage_email_controls(self, division: str) -> None:
-        """Automatic/manual toggle + a manual "Send Emails Now" trigger for
-        the Coverage Summary automated-email workflow (see
-        app.review_coverage_notification_service) -- one BM Coverage
-        Summary file per attachment, grouped into one email per ABM. Only
-        shown for the Coverage Summary report type; Opus Summary and RGD
-        Visit and Support have no email workflow of their own."""
-        row = ctk.CTkFrame(self._body_container, fg_color="transparent")
-        row.pack(fill="x", pady=(0, Spacing.SM))
-
-        self._coverage_email_status_label = ctk.CTkLabel(row, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED)
-        self._coverage_email_status_label.pack(side="left")
-
-        self._coverage_send_button = ctk.CTkButton(
-            row, text="Send Emails Now", font=Font.SMALL_BOLD,
-            fg_color=Color.SURFACE, text_color=Color.PRIMARY, hover_color=Color.PRIMARY_SOFT,
-            border_width=1, border_color=Color.PRIMARY,
-            command=lambda: self._send_coverage_emails(division),
-        )
-        self._coverage_send_button.pack(side="right", padx=(Spacing.SM, 0))
-
-        self._coverage_automatic_switch = ctk.CTkSwitch(
-            row, text="Send automatically after each generation", font=Font.SMALL,
-            text_color=Color.TEXT_PRIMARY, progress_color=Color.PRIMARY,
-            command=lambda: set_coverage_automatic_sending_enabled(bool(self._coverage_automatic_switch.get())),
-        )
-        self._coverage_automatic_switch.pack(side="right")
-        if coverage_automatic_sending_enabled():
-            self._coverage_automatic_switch.select()
-        else:
-            self._coverage_automatic_switch.deselect()
-
-    def _send_coverage_emails(self, division: str) -> None:
-        if self._coverage_send_button.winfo_exists():
-            self._coverage_send_button.configure(state="disabled", text="Sending...")
-        if self._coverage_email_status_label.winfo_exists():
-            self._coverage_email_status_label.configure(text="Building Coverage Summary files and emails...")
-
-        def work_fn(_report_progress):
-            drafts = build_notification_batch(division)
-            if not drafts:
-                return {"sent_count": 0, "failed_count": 0, "drafts": []}
-            return send_notification_batch(drafts)
-
-        def on_done(result, error):
-            if self._coverage_send_button.winfo_exists():
-                self._coverage_send_button.configure(state="normal", text="Send Emails Now")
-            if not self._coverage_email_status_label.winfo_exists():
-                return
-            if error is not None:
-                self._coverage_email_status_label.configure(text=f"Sending failed: {error!r}", text_color=Color.ERROR)
-                return
-            self._coverage_email_status_label.configure(
-                text=f"Sent {result['sent_count']} email(s), {result['failed_count']} failed.",
-                text_color=Color.TEXT_MUTED,
-            )
-
-        run_in_background(self, work_fn, on_done=on_done)
 
     # --- Export ------------------------------------------------------------
 
@@ -481,8 +412,6 @@ class ReviewFilePreviewPage(ctk.CTkFrame):
                 self._render_empty("Generation failed:\n\n" + "\n".join(result["errors"]))
                 return
             self._render()
-            if report_type == "Coverage Summary" and coverage_automatic_sending_enabled():
-                self._send_coverage_emails(division)
 
         run_in_background(self, work_fn, on_progress=on_progress, on_done=on_done)
 

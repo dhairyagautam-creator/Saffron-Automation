@@ -27,11 +27,6 @@ OUTSTANDING_INVOICES_TABLE = "outstanding_invoices"
 CWH_STOCK_TABLE = "cwh_stock"
 IMPORT_ID_COLUMN = "import_id"
 
-# Kept in sync with app.notification_service.DEFAULT_MASTER_EMAIL — the
-# value every existing installation was already hardcoded to send to,
-# before the Settings page made it editable.
-DEFAULT_MASTER_EMAIL = "gddesk@saffronformulations.com"
-
 
 def _existing_columns(table_name: str) -> set:
     with get_config_engine().connect() as conn:
@@ -175,24 +170,6 @@ def ensure_hospital_lookup_cache_coordinate_columns() -> None:
             if column_name not in existing:
                 conn.execute(text(f"ALTER TABLE hospital_lookup_cache ADD COLUMN {column_name} REAL"))
                 logger.info(f"Migration: added {column_name} column to 'hospital_lookup_cache'")
-
-
-def ensure_app_settings_master_email_column() -> None:
-    """Add the master_email_address column to app_settings if it predates
-    the Settings page making the master-report recipient editable. Existing
-    rows are backfilled with the address every installation was already
-    hardcoded to use, so behavior doesn't silently change on upgrade."""
-    if not inspect(get_config_engine()).has_table(APP_SETTINGS_TABLE):
-        return
-    if "master_email_address" in _existing_columns(APP_SETTINGS_TABLE):
-        return
-    with get_config_engine().begin() as conn:
-        conn.execute(text(f"ALTER TABLE {APP_SETTINGS_TABLE} ADD COLUMN master_email_address TEXT"))
-        conn.execute(
-            text(f"UPDATE {APP_SETTINGS_TABLE} SET master_email_address = :default WHERE master_email_address IS NULL"),
-            {"default": DEFAULT_MASTER_EMAIL},
-        )
-    logger.info(f"Migration: added master_email_address column to '{APP_SETTINGS_TABLE}' (default {DEFAULT_MASTER_EMAIL})")
 
 
 def ensure_app_settings_setup_completed_column() -> None:
@@ -1154,8 +1131,8 @@ def backfill_bookkeeping_timestamps_to_utc() -> None:
             conn.execute(
                 text(
                     f"INSERT INTO {APP_SETTINGS_TABLE} "
-                    "(automatic_email_enabled, setup_completed, inventory_data_reset_completed, "
-                    "timestamps_backfilled_to_utc) VALUES (0, 0, 0, 1)"
+                    "(setup_completed, inventory_data_reset_completed, "
+                    "timestamps_backfilled_to_utc) VALUES (0, 0, 1)"
                 )
             )
 
@@ -1163,6 +1140,58 @@ def backfill_bookkeeping_timestamps_to_utc() -> None:
         "Migration: backfilled bookkeeping timestamps from IST to UTC across "
         f"{len(shifted)} table(s), {sum(shifted.values())} total row(s) touched: {shifted}"
     )
+
+
+def drop_dashboard_rule_parameters() -> None:
+    """Delete the 11 'DASHBOARD' rule_parameters rows -- app/dashboard_service.py
+    and ui/analytics_dashboard_page.py (the only code that ever read this
+    rule_name) no longer exist anywhere in this codebase; the Parameters
+    page's own "Dashboard Parameters" card (which still let a user edit
+    and save these 11 values for a screen that no longer exists) was
+    removed in the same change (see ui/parameters_page.py). Parameter
+    sync project, Phase 1 dead-code cleanup."""
+    if not inspect(get_config_engine()).has_table("rule_parameters"):
+        return
+    with get_config_engine().begin() as conn:
+        result = conn.execute(text("DELETE FROM rule_parameters WHERE rule_name = 'DASHBOARD'"))
+    if result.rowcount:
+        logger.info(f"Migration: dropped {result.rowcount} 'DASHBOARD' row(s) from 'rule_parameters' (dead dashboard removed)")
+
+
+def drop_dead_automatic_email_flags() -> None:
+    """Removes the 4 'automatic sending' flags confirmed to have zero live
+    callers anywhere in the app (Phase 1 email-authority work replaced
+    every module's automatic sending with a manual "Send Emails" button,
+    but the flags themselves were left in place across all 4 modules --
+    see each module's own email-settings service docstring): two real
+    schema columns on the single-row app_settings table
+    (automatic_email_enabled, plus the already-superseded
+    master_email_address -- see app.master_email_recipients_service),
+    and two rows in the generic per-module parameter stores
+    (inventory_parameters.inventory_automatic_email_enabled,
+    work_distribution_parameters.work_distribution_automatic_email_enabled).
+    review_coverage_parameters.review_coverage_automatic_email_enabled was
+    already confirmed dead by the prior Review System email rework -- also
+    dropped here for the same reason, completing the same cleanup app-wide.
+    Parameter sync project, Phase 1."""
+    existing = _existing_columns(APP_SETTINGS_TABLE) if inspect(get_config_engine()).has_table(APP_SETTINGS_TABLE) else set()
+    with get_config_engine().begin() as conn:
+        for column in ("automatic_email_enabled", "master_email_address"):
+            if column in existing:
+                conn.execute(text(f"ALTER TABLE {APP_SETTINGS_TABLE} DROP COLUMN {column}"))
+                logger.info(f"Migration: dropped '{column}' column from '{APP_SETTINGS_TABLE}' (dead, zero callers)")
+
+    for table, parameter_name in (
+        ("inventory_parameters", "inventory_automatic_email_enabled"),
+        ("work_distribution_parameters", "work_distribution_automatic_email_enabled"),
+        ("review_coverage_parameters", "review_coverage_automatic_email_enabled"),
+    ):
+        if not inspect(get_config_engine()).has_table(table):
+            continue
+        with get_config_engine().begin() as conn:
+            result = conn.execute(text(f"DELETE FROM {table} WHERE parameter_name = :name"), {"name": parameter_name})
+        if result.rowcount:
+            logger.info(f"Migration: dropped '{parameter_name}' row from '{table}' (dead, zero callers)")
 
 
 def run_startup_migrations() -> None:
@@ -1174,7 +1203,6 @@ def run_startup_migrations() -> None:
     migrate_email_settings_to_app_settings()
     drop_obsolete_employee_emails_table()
     ensure_investigation_findings_hospital_suppression_columns()
-    ensure_app_settings_master_email_column()
     ensure_investigation_findings_hospital_detail_columns()
     ensure_hospital_lookup_cache_coordinate_columns()
     ensure_app_settings_geoapify_key_column()
@@ -1209,4 +1237,13 @@ def run_startup_migrations() -> None:
     ensure_work_distribution_doctors_bm_abm_code_columns()
     ensure_work_distribution_findings_employee_code_column()
     ensure_app_settings_inventory_reset_column()
+    # Must run BEFORE backfill_bookkeeping_timestamps_to_utc(): that
+    # function's own app_settings seed INSERT omits automatic_email_enabled/
+    # master_email_address (the current schema doesn't have them), so on an
+    # existing database that still has those columns as NOT NULL -- an
+    # install upgrading through this removal for the first time, not a
+    # fresh one -- the seed INSERT would violate the NOT NULL constraint
+    # unless they're already dropped by the time it runs.
+    drop_dead_automatic_email_flags()
     backfill_bookkeeping_timestamps_to_utc()
+    drop_dashboard_rule_parameters()

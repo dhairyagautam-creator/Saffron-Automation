@@ -35,12 +35,14 @@ DEFAULTS = {
     ABM_COVERAGE_DOCTORS: "10",
 }
 
-# The Supabase module_configurations.module_key this module would sync
-# under, once cloud sync is built for it (not yet -- see the module's
-# Phase 2 scope). Kept here now, unused, so a future sync wiring needs no
-# renaming, mirroring app.inventory_parameters_service.MODULE_KEY's own
-# role.
-MODULE_KEY = "work_distribution_parameters"
+# The module_configurations.module_key this module's KPI thresholds sync
+# under (parameter sync project, Phase 3) -- combined with
+# ManagerWorkAllocationParameter's own values into one shared blob under
+# this same key (see app/parameter_sync_service.py and
+# app/manager_work_allocation_parameters_service.py's own
+# get_full_configuration()), matching module_registry's canonical
+# "work_distribution" module key rather than this table's own name.
+MODULE_KEY = "work_distribution"
 
 
 def ensure_defaults() -> None:
@@ -140,3 +142,41 @@ def get_all() -> dict:
     every upload, so calculations always use the current Settings values,
     never a hardcoded number."""
     return {name: _get(name) for name in DEFAULTS}
+
+
+# --- Cloud config sync (parameter sync project, Phase 3) ------------------
+# One shared blob under module_key "work_distribution" covers BOTH this
+# module's own 6 KPI thresholds and Manager Work Allocation's own 2 --
+# they live in two separate local tables and are edited by two separate
+# Save buttons on the same Work Distribution Settings page, but sync
+# together as one config, matching module_registry's single
+# "work_distribution" module key rather than one row per local table.
+
+def get_full_configuration() -> dict:
+    """This module's own 6 KPI thresholds plus Manager Work Allocation's
+    own 2 (see app.manager_work_allocation_parameters_service.get_full_configuration),
+    merged into one dict -- the complete config pushed under MODULE_KEY."""
+    from app.manager_work_allocation_parameters_service import get_full_configuration as _get_mwa_configuration
+
+    return {**get_all(), **_get_mwa_configuration()}
+
+
+def apply_full_configuration(config: dict) -> tuple[bool, str | None]:
+    """Writes a pulled config blob back into local storage: this
+    module's own KPI keys (present in `config`, using the same
+    _set()), then Manager Work Allocation's own keys via
+    app.manager_work_allocation_parameters_service.apply_full_configuration,
+    which validates rbm_flag_tiers before writing anything for its half.
+    Returns (True, None) on success, or (False, error_message) if the
+    Manager Work Allocation half rejects the blob -- in that case, this
+    module's OWN KPI keys are still applied (they have no cross-field
+    validation to fail), so a bad rbm_flag_tiers on the remote side never
+    blocks a genuinely valid KPI update from the same pull. A KPI key
+    missing from `config` is left untouched, never blanked."""
+    for name in DEFAULTS:
+        if name in config:
+            _set(name, str(config[name]))
+
+    from app.manager_work_allocation_parameters_service import apply_full_configuration as _apply_mwa_configuration
+
+    return _apply_mwa_configuration(config)

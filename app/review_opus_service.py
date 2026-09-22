@@ -70,6 +70,7 @@ from openpyxl.utils import get_column_letter
 from app.config import REVIEW_UPLOADS_DIR
 from database.connection import utcnow
 from app.hq_distribution_service import get_valid_hqs_for_division
+from app.module_data_version_service import bump_data_version
 from app.review_opus_mapping import OPUS_HQ_BLOCKS_BY_DIVISION
 from app.review_schemas import MonthFamily
 from app.review_upload_service import get_slot_state
@@ -479,11 +480,14 @@ _LEFT = Alignment(horizontal="left")
 HEADERS = ("Region", "HQ", "PARTCULARS", "No of BM", "NO") + OPUS_REPORT_MONTHS + ("CUMMULATIVE",)
 
 
-def _write_workbook(division: str, computed_blocks: list, months: tuple, out_path: Path) -> None:
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "OPUS SUMMARY"
-
+def _write_sheet(ws, computed_blocks: list, months: tuple) -> None:
+    """Writes the Opus Summary grid (header row + one 14-row block per HQ,
+    formula rows included) into an already-created worksheet -- split out
+    from _write_workbook so a caller building a multi-sheet workbook (see
+    app/review_notification_service.py's combined per-BM file) can write
+    this sheet alongside Coverage Summary's and RGD Visit and Support's
+    own sheets in the SAME workbook. Never sets ws.title -- that's the
+    caller's job."""
     n_months = len(months)
     month_col_start = 6  # column F
     cumulative_col = month_col_start + n_months
@@ -553,6 +557,12 @@ def _write_workbook(division: str, computed_blocks: list, months: tuple, out_pat
             ws.cell(row=row, column=col_idx).border = _BORDER
         row += 1
 
+
+def _write_workbook(division: str, computed_blocks: list, months: tuple, out_path: Path) -> None:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "OPUS SUMMARY"
+    _write_sheet(ws, computed_blocks, months)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
 
@@ -696,6 +706,67 @@ def _compute_opus_blocks(division: str, report_progress=None) -> list:
     ]
 
 
+def compute_opus_blocks_by_hq(division: str, report_progress=None) -> dict:
+    """{normalized Annual Targets HQ spelling: ComputedHqBlock} for every
+    RESOLVED HQ block this division's Opus Summary computes -- built for
+    app/review_notification_service.py's combined per-BM file, which needs
+    to look up "this BM's own Opus Summary section" by the bare HQ name
+    Coverage Summary already resolved for that BM
+    (app.review_coverage_service.ComputedBmBlock.hq, itself read from Avg
+    & Calls' "Reporting HQ" column) -- NOT the reference workbook's own
+    display spelling (ComputedHqBlock.hq), which frequently differs (see
+    _filter_applicable_blocks' own docstring, e.g. "Rajahmundry" vs
+    "RAJAHMUNDARY"). Keyed by every one of a block's own
+    annual_targets_keys HQ spellings (there can be more than one row
+    merged into a single block) -- the SAME Annual-Targets-canonical
+    spelling app.review_coverage_service._HQ_SPELLING_ALIASES / the
+    +" POOL" convention already resolves a bare "Reporting HQ" name onto
+    (see that module's _hq_is_applicable) -- so a caller matching a BM's
+    HQ against this dict should apply that exact same 3-step
+    normalization, not a new one.
+
+    Unresolved blocks (annual_targets_keys is None -- no Annual Targets
+    data for this HQ under this division) are never included: there is no
+    Annual-Targets spelling to key them by, and a BM should never be
+    routed to a block with no real Opus Summary numbers -- the caller is
+    expected to treat "not found in this dict" as "no Opus Summary
+    section available for this BM's HQ" and handle it explicitly (an
+    unresolved-style placeholder), never silently skip the whole file.
+
+    Assumes the same pre-conditions as _compute_opus_blocks (division has
+    an HQ mapping, opus_prerequisites_ready is True) -- callers check
+    those first, same contract as generate_opus_summary's own
+    error-handling."""
+    hq_blocks = _filter_applicable_blocks(division, OPUS_HQ_BLOCKS_BY_DIVISION[division])
+
+    if report_progress:
+        report_progress(10, "Loading Annual Targets...")
+    at_lookup = _load_annual_targets(division)
+
+    if report_progress:
+        report_progress(30, "Loading Primary Sales...")
+    primary_lookups = _load_primary_sales_lookups("opus_primary_sales", division)
+
+    if report_progress:
+        report_progress(55, "Loading Last Year Primary Sales...")
+    ly_lookups = _load_primary_sales_lookups("opus_last_year_primary_sales", division)
+
+    if report_progress:
+        report_progress(75, "Loading Secondary Sales...")
+    secondary_lookup = _load_secondary_sales(division)
+
+    if report_progress:
+        report_progress(85, "Calculating...")
+    by_hq: dict = {}
+    for block in hq_blocks:
+        if block.annual_targets_keys is None:
+            continue  # unresolved -- no Annual Targets spelling to key it by
+        computed = _compute_hq_block(block, at_lookup, primary_lookups, ly_lookups, secondary_lookup, OPUS_REPORT_MONTHS)
+        for _region, hq in block.annual_targets_keys:
+            by_hq[_norm(hq)] = computed
+    return by_hq
+
+
 # --- Top-level entry point -----------------------------------------------------
 
 def generate_opus_summary(division: str, report_progress=None) -> dict:
@@ -768,6 +839,7 @@ def generate_opus_summary(division: str, report_progress=None) -> dict:
         f"Opus Summary generated for {division}: {len(computed)} HQ blocks "
         f"({len(unresolved)} unresolved) -> {out_path}"
     )
+    bump_data_version("review_system")
     return {
         "success": True, "division": division, "file_path": str(out_path),
         "generated_at": utcnow(), "hq_count": len(computed),

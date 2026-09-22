@@ -58,6 +58,19 @@ DISPLAY_MODE_RAW = "raw"
 DISPLAY_MODE_PACKS = "packs"
 DEFAULT_THRESHOLD_DISPLAY_MODE = DISPLAY_MODE_RAW
 
+# The module_configurations.module_key these 4 parameters sync under
+# (parameter sync project, Phase 3) -- matches module_registry's
+# canonical "inventory_module" key, not this table's own name. Sender
+# email/app password (app/inventory_email_settings_service.py) are
+# deliberately excluded -- see that module's own docstring.
+MODULE_KEY = "inventory_module"
+_SYNCED_PARAMETER_NAMES = (
+    THRESHOLD_MULTIPLIER,
+    CWH_THRESHOLD_MULTIPLIER,
+    EXCESS_TRANSFER_CANDIDATE_MULTIPLIER,
+    THRESHOLD_DISPLAY_MODE,
+)
+
 
 def ensure_defaults() -> None:
     """Insert each parameter's default value if it doesn't already exist
@@ -215,3 +228,43 @@ def set_threshold_display_mode(value: str) -> None:
     finally:
         session.close()
     logger.info(f"Saved Inventory parameter {THRESHOLD_DISPLAY_MODE} = {value}")
+
+
+# --- Cloud config sync (parameter sync project, Phase 3) ------------------
+
+def get_full_configuration() -> dict:
+    """The complete synced config for MODULE_KEY -- the 4 non-credential
+    parameters only (see _SYNCED_PARAMETER_NAMES); sender email/app
+    password never included, by construction, not by filtering."""
+    return {
+        THRESHOLD_MULTIPLIER: get_threshold_multiplier(),
+        CWH_THRESHOLD_MULTIPLIER: get_cwh_threshold_multiplier(),
+        EXCESS_TRANSFER_CANDIDATE_MULTIPLIER: get_excess_transfer_candidate_multiplier(),
+        THRESHOLD_DISPLAY_MODE: get_threshold_display_mode(),
+    }
+
+
+def apply_full_configuration(config: dict) -> tuple[bool, str | None]:
+    """Writes a pulled config blob back into local storage. Returns
+    (True, None) on success, or (False, error_message) WITHOUT writing
+    anything if threshold_display_mode is present but not a recognized
+    value -- a malformed remote blob must never corrupt local state. A
+    missing key is left untouched; an unrecognized extra key is ignored."""
+    if THRESHOLD_DISPLAY_MODE in config and config[THRESHOLD_DISPLAY_MODE] not in (DISPLAY_MODE_RAW, DISPLAY_MODE_PACKS):
+        return False, f"Remote threshold_display_mode was {config[THRESHOLD_DISPLAY_MODE]!r}, not a recognized value -- rejected, nothing applied."
+
+    for name, setter in (
+        (THRESHOLD_MULTIPLIER, set_threshold_multiplier),
+        (CWH_THRESHOLD_MULTIPLIER, set_cwh_threshold_multiplier),
+        (EXCESS_TRANSFER_CANDIDATE_MULTIPLIER, set_excess_transfer_candidate_multiplier),
+    ):
+        if name in config:
+            try:
+                setter(str(float(config[name])))
+            except (TypeError, ValueError):
+                return False, f"Remote {name} was not a valid number -- rejected, nothing applied."
+
+    if THRESHOLD_DISPLAY_MODE in config:
+        set_threshold_display_mode(config[THRESHOLD_DISPLAY_MODE])
+
+    return True, None

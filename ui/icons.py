@@ -434,6 +434,11 @@ _ICON_FUNCS = {
     "File Preview": icon_table,
     "All Top Performers": icon_dashboard,
     "Hierarchy and HQ Distribution": icon_hierarchy,
+    # Review System's own Send Emails page (ui/review_findings_page.py) --
+    # reuses the same notifications glyph "Email Center"/"Automated
+    # Emails" already use above, same reasoning as this section's other
+    # reused glyphs.
+    "Send Emails": icon_notifications,
 }
 
 

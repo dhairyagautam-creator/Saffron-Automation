@@ -53,11 +53,13 @@ DEFAULT_RBM_FLAG_TIERS = [
     {"min": 14, "max": None, "missed": 4},
 ]
 
-# The Supabase module_configurations.module_key this module would sync
-# under, once cloud sync is built for it (not yet -- out of this phase's
-# scope). Kept here now, unused, mirroring
-# app.work_distribution_parameters_service.MODULE_KEY's own role.
-MODULE_KEY = "manager_work_allocation_parameters"
+# This module's own values are folded into the SHARED "work_distribution"
+# module_configurations blob (parameter sync project, Phase 3) --
+# app.work_distribution_parameters_service.get_full_configuration()/
+# apply_full_configuration() are what actually push/pull; this module
+# just contributes its own get_full_configuration()/apply_full_configuration()
+# below. No MODULE_KEY constant of its own -- Manager Work Allocation has
+# no separate module_key in module_registry to sync under.
 
 
 def ensure_defaults() -> None:
@@ -174,3 +176,53 @@ def get_all() -> dict:
     every upload, so calculations always use the current Settings value,
     never a hardcoded number."""
     return {name: _get(name) for name in DEFAULTS}
+
+
+# --- Cloud config sync (parameter sync project, Phase 3) ------------------
+# Folded into the shared "work_distribution" module_configurations blob --
+# see app.work_distribution_parameters_service.get_full_configuration()/
+# apply_full_configuration(), which call these two.
+
+def get_full_configuration() -> dict:
+    """This module's own two keys, ready to merge into the shared
+    "work_distribution" blob. rbm_flag_tiers is included as its own
+    already-JSON-serializable list (not re-encoded as a string) -- the
+    surrounding config dict is itself pushed as one jsonb value, so a
+    nested list is natural here, unlike the local SQLite store's own
+    flat string-only column."""
+    return {
+        MINIMUM_JOINT_WORKING_DAYS: get_minimum_joint_working_days(),
+        RBM_FLAG_TIERS: get_rbm_flag_tiers(),
+    }
+
+
+def apply_full_configuration(config: dict) -> tuple[bool, str | None]:
+    """Writes a pulled config blob's Manager Work Allocation keys back
+    into local storage. Returns (True, None) on success, or
+    (False, error_message) WITHOUT writing anything if rbm_flag_tiers is
+    present but fails app.manager_work_allocation_rbm_service.validate_rbm_flag_tiers
+    -- a malformed remote blob (a bad manual edit, a bug on another
+    machine) must never corrupt this machine's own valid tiers. A
+    missing key is left untouched (a partial blob never blanks an
+    existing local value); an unrecognized extra key is ignored
+    (forward-compatible)."""
+    if RBM_FLAG_TIERS in config:
+        from app.manager_work_allocation_rbm_service import validate_rbm_flag_tiers
+
+        tiers = config[RBM_FLAG_TIERS]
+        if not isinstance(tiers, list):
+            return False, "Remote Manager Work Allocation config's rbm_flag_tiers was not a list -- rejected, nothing applied."
+        errors = validate_rbm_flag_tiers(tiers)
+        if errors:
+            return False, "Remote rbm_flag_tiers failed validation: " + " ".join(errors)
+
+    if MINIMUM_JOINT_WORKING_DAYS in config:
+        try:
+            _set(MINIMUM_JOINT_WORKING_DAYS, str(float(config[MINIMUM_JOINT_WORKING_DAYS])))
+        except (TypeError, ValueError):
+            return False, "Remote minimum_joint_working_days was not a valid number -- rejected, nothing applied."
+
+    if RBM_FLAG_TIERS in config:
+        set_rbm_flag_tiers(config[RBM_FLAG_TIERS])
+
+    return True, None

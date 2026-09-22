@@ -181,14 +181,9 @@ class WorkDistributionEmailCenterPage(ctk.CTkFrame):
         self.sender_status_label.configure(text="")
 
     def _on_save_sender_clicked(self) -> None:
-        # Automatic sending no longer exists (Phase 1 email authority work --
-        # see ui/work_distribution_findings_page.py's Send Emails button).
-        # automatic_sending_enabled is passed False and otherwise unread by
-        # anything; left in place rather than migrated away.
         save_settings(
             self.sender_email_entry.get().strip(),
             self.sender_password_entry.get().strip(),
-            False,
         )
         self.sender_status_label.configure(text="Sender credentials saved.", text_color=Color.SUCCESS)
 

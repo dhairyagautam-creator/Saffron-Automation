@@ -46,6 +46,7 @@ from openpyxl.utils import get_column_letter
 
 from app.config import REVIEW_UPLOADS_DIR
 from database.connection import utcnow
+from app.module_data_version_service import bump_data_version
 from app.review_coverage_service import _load_visits_support, _visits_support_slot_id
 from app.review_upload_service import get_slot_state
 
@@ -139,6 +140,20 @@ def _raw(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     return value
+
+
+def _rows_for_bm(rows: list, bm_code: str) -> list:
+    """The subset of `rows` (from _load_rgd_rows) belonging to one BM --
+    for app/review_notification_service.py's combined per-BM file, which
+    needs this BM's own RGD Visit and Support rows as one sheet. Matched
+    by exact "bm_code" equality after stripping whitespace, same
+    convention app.review_coverage_service._compute_coverage_blocks
+    already relies on for the identical "Employee Code"/"BM code" pairing
+    (verified 2026-08-19: the two files use the same code scheme for real
+    employees) -- never case-normalized, since these are exact identifier
+    codes, not free-text names."""
+    code = str(bm_code).strip()
+    return [r for r in rows if str(r.get("bm_code", "")).strip() == code]
 
 
 def _load_rgd_rows(division: str) -> list:
@@ -275,6 +290,7 @@ def generate_rgd_summary(division: str, report_progress=None) -> dict:
         report_progress(100, "Done.")
 
     logger.info(f"RGD Visit and Support generated for {division}: {len(rows)} row(s) -> {out_path}")
+    bump_data_version("review_system")
     return {
         "success": True, "division": division, "file_path": str(out_path),
         "generated_at": utcnow(), "row_count": len(rows), "errors": [],

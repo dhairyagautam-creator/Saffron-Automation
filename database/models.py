@@ -399,9 +399,12 @@ class PathValidatorUploadSlot(Base):
 
 
 class ReviewCoverageParameter(Base):
-    """A single named setting for the Coverage Summary automated-email
-    workflow (see app/review_coverage_email_settings_service.py) --
-    currently just the automatic-sending toggle. Deliberately does NOT
+    """A single named setting for Review System's automated-email
+    workflow (see app/review_email_settings_service.py) -- currently just
+    the automatic-sending toggle, which has had zero callers since the
+    email rework that removed auto-send entirely (see that module's own
+    docstring). Table/model name kept as-is (not renamed) -- deliberately
+    does NOT
     store a sender email/app password of its own: the workflow always
     sends through the ONE shared account in app/email_settings_service.py
     (the same account Path Validator uses), never a second,
@@ -416,16 +419,23 @@ class ReviewCoverageParameter(Base):
 
 
 class ReviewCoverageEmailNotification(Base):
-    """One row per Coverage Summary automated-email send attempt -- one
-    row per ABM per send run (a consolidated email with one attachment
-    per BM reporting to that ABM), mirroring
+    """One row per Review System automated-email send attempt -- one
+    row per ABM per send run (a consolidated email with one combined
+    attachment per BM reporting to that ABM), mirroring
     WorkDistributionEmailNotification's own shape and status vocabulary
-    (Draft | Sent | Failed) -- see
-    app/review_coverage_notification_service.py.
+    (Draft | Sent | Failed) -- see app/review_notification_service.py.
 
-    `bm_names` is a comma-separated list of the BM(s) whose Coverage
-    Summary file was attached to this one email -- descriptive only, not
-    a grouping key. `recipient_name`/`recipient_email` are a snapshot at
+    As of the email rework that moved this module onto the shared,
+    cross-machine email_send_history table for "last sent"/resend-confirm
+    state (Q9), app/review_notification_service.py no longer writes new
+    rows here -- this table/model is kept, unrenamed, only so historical
+    rows recorded before that rework remain readable
+    (get_recent_notifications).
+
+    `bm_names` is a comma-separated list of the BM(s) whose combined
+    Opus/Coverage/RGD file was attached to this one email -- descriptive
+    only, not a grouping key. `recipient_name`/`recipient_email` are a
+    snapshot at
     send time (read from employee_hierarchy then, not a foreign key) -- a
     later hierarchy refresh must never rewrite this attempt's own
     history.
@@ -570,11 +580,6 @@ class AppSettings(Base):
     id = Column(Integer, primary_key=True)
     sender_gmail_address = Column(String, nullable=True)
     gmail_app_password = Column(String, nullable=True)
-    automatic_email_enabled = Column(Integer, nullable=False, default=0)  # 0/1
-    # Recipient of the consolidated "every flagged employee this session"
-    # master report (see app/notification_service.py). Defaults to
-    # gddesk@saffronformulations.com but is editable from the Settings page.
-    master_email_address = Column(String, nullable=True)
     # Geoapify Places API key used by Hospital Suppression (see
     # app/hospital_service.py, app/geoapify_settings_service.py) — replaces
     # the free, unauthenticated OpenStreetMap Overpass API, which repeatedly

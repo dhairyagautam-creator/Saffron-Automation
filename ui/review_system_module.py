@@ -1,8 +1,9 @@
 """The Review System module: branded sidebar navigation plus page content,
-mirroring ui/work_distribution_module.py's shell shape. Structural scaffold
-only -- no cloud sync layer exists in this app, and the four pages are
-placeholders (see each page's own docstring).
-"""
+mirroring ui/work_distribution_module.py's shell shape. "Send Emails"
+(ui/review_findings_page.py) is this module's Findings-page equivalent --
+its own email-sending entry point, added by the email rework that moved
+sending off the File Preview page entirely (see that page's own
+docstring)."""
 
 import customtkinter as ctk
 from PIL import Image
@@ -10,6 +11,7 @@ from PIL import Image
 from ui.components import SecondaryButton
 from ui.icons import get_icon
 from ui.review_file_preview_page import ReviewFilePreviewPage
+from ui.review_findings_page import ReviewFindingsPage
 from ui.review_hierarchy_page import ReviewHierarchyPage
 from ui.review_settings_page import ReviewSettingsPage
 from ui.review_top_performers_page import ReviewTopPerformersPage
@@ -21,6 +23,7 @@ BASE_PAGES = (
     "File Preview",
     "All Top Performers",
     "Hierarchy and HQ Distribution",
+    "Send Emails",
     "Settings",
 )
 
@@ -117,6 +120,7 @@ class ReviewSystemModule(ctk.CTkFrame):
         self.pages["File Preview"] = ReviewFilePreviewPage(container)
         self.pages["All Top Performers"] = ReviewTopPerformersPage(container)
         self.pages["Hierarchy and HQ Distribution"] = ReviewHierarchyPage(container)
+        self.pages["Send Emails"] = ReviewFindingsPage(container)
         self.pages["Settings"] = ReviewSettingsPage(container)
 
         for page in self.pages.values():

@@ -7,7 +7,13 @@ behavior. There is exactly one email credential store in the application
 (this is not Work Distribution's separate per-module credential set,
 which was a deliberate one-off decision for that module) -- this page is
 a second place to manage the same settings, not new email functionality.
-"""
+
+The "Enable Automatic Email Sending" switch that used to live here was
+removed by the email rework (it read/wrote AppSettings.automatic_email_enabled
+but nothing in the app ever checked that flag). That column itself was
+later dropped entirely (Phase 1 of the parameter sync project -- see
+database/migrations.py's drop_dead_automatic_email_flags()), so there's
+no longer anything to preserve here either."""
 
 import customtkinter as ctk
 from loguru import logger
@@ -65,27 +71,6 @@ class ReviewSettingsPage(ctk.CTkFrame):
             anchor="w",
         ).pack(anchor="w", pady=(0, Spacing.MD))
 
-        self.automatic_switch = ctk.CTkSwitch(
-            body,
-            text="Enable Automatic Email Sending",
-            font=Font.BODY,
-            text_color=Color.TEXT_PRIMARY,
-            progress_color=Color.PRIMARY,
-        )
-        self.automatic_switch.pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(
-            body,
-            text=(
-                "When enabled, notifications are sent automatically right after generation "
-                "finishes. When off, send them manually instead."
-            ),
-            font=Font.SMALL,
-            text_color=Color.TEXT_MUTED,
-            anchor="w",
-            wraplength=650,
-            justify="left",
-        ).pack(anchor="w", pady=(0, Spacing.MD))
-
         button_row = ctk.CTkFrame(body, fg_color="transparent")
         button_row.pack(fill="x", pady=(0, Spacing.SM))
 
@@ -111,17 +96,12 @@ class ReviewSettingsPage(ctk.CTkFrame):
         self.sender_entry.insert(0, settings["sender_email"])
         self.password_entry.delete(0, "end")
         self.password_entry.insert(0, settings["app_password"])
-        if settings["automatic_sending_enabled"]:
-            self.automatic_switch.select()
-        else:
-            self.automatic_switch.deselect()
         self.result_label.configure(text="")
 
     def _on_save_clicked(self) -> None:
         save_settings(
             self.sender_entry.get().strip(),
             self.password_entry.get().strip(),
-            bool(self.automatic_switch.get()),
         )
         self.result_label.configure(text="Email settings saved successfully.", text_color=Color.SUCCESS)
 

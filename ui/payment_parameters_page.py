@@ -27,14 +27,18 @@ release.
 
 import customtkinter as ctk
 
+from app.parameter_sync_service import check_for_config_update, try_push_and_apply
 from app.payment_analytics_service import RISK_GREEN, RISK_ORANGE, RISK_RED, RISK_YELLOW
 from app.payment_parameters_service import (
     COLLECTIONS_AGEING,
     HISTORICAL_RISK_SCORING,
+    MODULE_KEY,
+    apply_full_configuration,
+    get_full_configuration,
     get_parameters,
-    set_parameter,
 )
 from ui.components import Card, PrimaryButton, SecondaryButton, SectionHeader
+from ui.parameter_sync_panel import ParameterSyncPanel
 from ui.theme import Color, Font, Spacing
 
 HISTORICAL_SLIDERS = [
@@ -151,9 +155,20 @@ class _ThresholdSection(Card):
         if error:
             self.status_label.configure(text=error, text_color=Color.ERROR)
             return
-        for key, value in values.items():
-            set_parameter(self._rule_name, key, str(value))
-        self.status_label.configure(text="Saved", text_color=Color.SUCCESS)
+
+        # Full current config (both rule_name groups) with just this
+        # section's own values overlaid -- the other section's own
+        # thresholds are included unchanged in what gets pushed, never
+        # dropped (parameter sync project: one shared "payments_module"
+        # blob covers both sections on this page).
+        new_config = get_full_configuration()
+        new_config[self._rule_name] = {key: str(value) for key, value in values.items()}
+        ok, sync_error = try_push_and_apply(MODULE_KEY, new_config, apply_full_configuration)
+        if not ok:
+            self.status_label.configure(text=sync_error, text_color=Color.ERROR)
+            return
+
+        self.status_label.configure(text="Saved and synced.", text_color=Color.SUCCESS)
         if self._on_saved is not None:
             self._on_saved()
 
@@ -189,6 +204,13 @@ class PaymentParametersPage(ctk.CTkFrame):
         super().__init__(master, fg_color=Color.SURFACE)
         self._build_widgets()
 
+    def on_show(self) -> None:
+        self._sync_panel.check_now()
+
+    def _reload_all(self) -> None:
+        self._historical_section._load_values()
+        self._collections_section._load_values()
+
     def _build_widgets(self) -> None:
         outer = ctk.CTkScrollableFrame(self, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=Spacing.LG, pady=Spacing.LG)
@@ -197,20 +219,30 @@ class PaymentParametersPage(ctk.CTkFrame):
             outer, "Parameters", "Tune the ageing/risk thresholds used for colour coding across Payment Analytics"
         ).pack(anchor="w", pady=(0, Spacing.LG))
 
-        _ThresholdSection(
+        self._sync_panel = ParameterSyncPanel(
+            outer,
+            check_fn=lambda: check_for_config_update(MODULE_KEY, get_full_configuration()),
+            apply_fn=lambda result: apply_full_configuration(result["config"]),
+            on_applied=self._reload_all,
+        )
+        self._sync_panel.pack(fill="x", pady=(0, Spacing.MD))
+
+        self._historical_section = _ThresholdSection(
             outer, "Risk Scoring",
             "Thresholds that determine a Historical Payment Analytics customer's risk category from their "
             "Average Payment Days. Each customer's risk category is calculated when a Historical or Monthly "
             "Report is processed, so a saved change here takes effect on the next upload -- it does not "
             "retroactively recolor customers already on screen.",
             HISTORICAL_RISK_SCORING, HISTORICAL_SLIDERS, _historical_preview,
-        ).pack(fill="x", pady=(0, Spacing.LG))
+        )
+        self._historical_section.pack(fill="x", pady=(0, Spacing.LG))
 
-        _ThresholdSection(
+        self._collections_section = _ThresholdSection(
             outer, "Collections Action Center Parameters",
             "Thresholds for the Collections Action Center's overdue-ageing buckets. Green is not shown here -- "
             "it simply means today's date is on or before the invoice's Due Date, and that rule never changes. "
             "Only the Yellow and Orange maximums (in days overdue) are adjustable; Red is automatically "
             "everything past the Orange maximum.",
             COLLECTIONS_AGEING, COLLECTIONS_SLIDERS, _collections_preview,
-        ).pack(fill="x")
+        )
+        self._collections_section.pack(fill="x")

@@ -1,8 +1,12 @@
-"""Renders the Coverage Summary automated-email workflow's own
-notification -- one HTML document (+ plain-text companion) per ABM,
-listing the BM Coverage Summary files attached to that one email (see
-app/review_coverage_notification_service.py for the actual attachment
-grouping; this module only renders already-resolved data).
+"""Renders Review System's automated-email workflow's own notification --
+one HTML document (+ plain-text companion) per ABM, listing the BM files
+attached to that one email -- each file a combined workbook covering that
+BM's own Opus Summary, Coverage Summary, and RGD Visit and Support (see
+app/review_notification_service.py for the actual attachment grouping;
+this module only renders already-resolved data). Named
+review_coverage_email_template.py for historical reasons -- it predates
+the file's contents growing beyond Coverage Summary alone; not renamed in
+this rework (only the notification/settings services themselves were).
 
 Reuses app/email_template.py's exact brand colors/fonts/logo-CID
 (imported, never redefined) and the overall document skeleton, same
@@ -10,7 +14,7 @@ reasoning as app/work_distribution_email_template.py's own docstring:
 consistent rendering in Gmail/Outlook, and every notification email in
 this application looking like one product. Deliberately much simpler
 than either of those two templates -- there is no finding/KPI content
-here at all, just "here are your BMs' attached Coverage Summary files."
+here at all, just "here are your BMs' attached Review Summary files."
 
 Every value that originated from uploaded data or the hierarchy workbook
 is HTML-escaped before being placed in markup.
@@ -57,11 +61,11 @@ def _summary_box(cells: list[tuple[str, str]]) -> str:
 
 
 def render_html(recipient_label: str, division: str, generated_at: str, bm_names: list[str]) -> str:
-    """Full HTML document for one ABM's consolidated Coverage Summary
+    """Full HTML document for one ABM's consolidated Review Summary
     email -- header (with logo), summary card, a bulleted list of the
     attached BM names, and footer. `bm_names` is display order as
-    attached (one Coverage Summary .xlsx per name); this function only
-    renders it."""
+    attached (one combined Opus/Coverage/RGD .xlsx per name); this
+    function only renders it."""
     summary_cells = [
         ("Recipient", recipient_label),
         ("Division", division),
@@ -102,7 +106,7 @@ def render_html(recipient_label: str, division: str, generated_at: str, bm_names
                 </td>
                 <td style="vertical-align:middle;">
                   <div style="color:{WHITE};font-size:22px;font-weight:bold;font-family:{FONT_STACK};">Saffron Automation</div>
-                  <div style="color:{BRAND_PRIMARY_SOFT};font-size:14px;margin-top:2px;font-family:{FONT_STACK};">Coverage Summary</div>
+                  <div style="color:{BRAND_PRIMARY_SOFT};font-size:14px;margin-top:2px;font-family:{FONT_STACK};">Review Summary</div>
                 </td>
               </tr></table>
             </td>
@@ -113,7 +117,8 @@ def render_html(recipient_label: str, division: str, generated_at: str, bm_names
                 Dear {esc(recipient_label)},
               </p>
               <p style="font-size:14px;color:{TEXT_PRIMARY};line-height:1.5;margin:0;font-family:{FONT_STACK};">
-                Attached are the {division} Coverage Summary files for each BM reporting to you.
+                Attached are the {division} Review Summary files for each BM reporting to you --
+                each file covers that BM's Opus Summary, Coverage Summary, and RGD Visit and Support.
               </p>
 
               {_summary_box(summary_cells)}
@@ -151,7 +156,8 @@ def render_text(recipient_label: str, division: str, generated_at: str, bm_names
     lines = [
         f"Dear {recipient_label},",
         "",
-        f"Attached are the {division} Coverage Summary files for each BM reporting to you.",
+        f"Attached are the {division} Review Summary files for each BM reporting to you -- "
+        "each file covers that BM's Opus Summary, Coverage Summary, and RGD Visit and Support.",
         "",
         f"Recipient: {recipient_label}",
         f"Division: {division}",

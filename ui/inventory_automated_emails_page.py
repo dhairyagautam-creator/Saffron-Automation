@@ -26,10 +26,12 @@ import customtkinter as ctk
 
 from app.email_send_history_service import format_relative_time
 from app.inventory_email_recipients_service import (
-    create_recipient,
-    delete_recipient,
+    apply_new_recipients,
+    check_for_update,
+    create_recipient_synced,
+    delete_recipient_synced,
     get_all_recipients,
-    update_recipient,
+    update_recipient_synced,
 )
 from app.inventory_notification_service import (
     STATUS_SKIPPED_NO_DATA,
@@ -55,6 +57,7 @@ from ui.components import (
 )
 from ui.icons import get_icon
 from ui.inventory_email_recipient_dialog import RecipientFormDialog
+from ui.parameter_sync_panel import ParameterSyncPanel
 from ui.send_emails_dialog import SendEmailsDialog
 from ui.theme import Color, Font, Spacing
 from ui.user_dialogs import ConfirmDialog
@@ -137,6 +140,11 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
         ).pack(side="left")
         PrimaryButton(header_row, text="+ Add Recipient", command=self._open_add_dialog).pack(side="right")
 
+        self._sync_panel = ParameterSyncPanel(
+            body, check_fn=check_for_update, apply_fn=self._on_sync_apply, on_applied=self._render_recipients,
+        )
+        self._sync_panel.pack(fill="x", pady=(0, Spacing.SM))
+
         ctk.CTkLabel(
             body,
             text=(
@@ -190,6 +198,10 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
         self._render_recipients()
         self._render_log()
         self._refresh_send_emails_button()
+        self._sync_panel.check_now()
+
+    def _on_sync_apply(self, check_result: dict) -> tuple[bool, str | None]:
+        return apply_new_recipients(check_result)
 
     # --- Send Emails ---------------------------------------------------------
 
@@ -318,26 +330,28 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
 
     def _handle_add_submit(self, dialog, data: dict) -> None:
         try:
-            create_recipient(data["name"], data["email"], data["divisions"])
+            ok, error, _created = create_recipient_synced(data["name"], data["email"], data["divisions"])
         except Exception as exc:
             dialog.finish_saving(False, str(exc))
             return
+        if not ok:
+            dialog.finish_saving(False, error)
+            return
         dialog.finish_saving(True)
-        self._show_status(f"Recipient {data['name']} added.", kind="success")
+        self._show_status(f"Recipient {data['name']} added and synced.", kind="success")
         self._render_recipients()
 
     def _handle_edit_submit(self, dialog, data: dict) -> None:
         try:
-            found = update_recipient(data["id"], data["name"], data["email"], data["divisions"])
+            ok, error = update_recipient_synced(data["id"], data["name"], data["email"], data["divisions"])
         except Exception as exc:
             dialog.finish_saving(False, str(exc))
             return
-        if not found:
-            dialog.finish_saving(False, "This recipient no longer exists -- it may have been deleted elsewhere.")
-            self._render_recipients()
+        if not ok:
+            dialog.finish_saving(False, error)
             return
         dialog.finish_saving(True)
-        self._show_status(f"Recipient {data['name']} updated.", kind="success")
+        self._show_status(f"Recipient {data['name']} updated and synced.", kind="success")
         self._render_recipients()
 
     def _on_delete_selected_clicked(self) -> None:
@@ -362,12 +376,15 @@ class InventoryAutomatedEmailsPage(ctk.CTkFrame):
 
     def _handle_delete_confirm(self, dialog, recipient: dict) -> None:
         try:
-            delete_recipient(recipient["id"])
+            ok, error = delete_recipient_synced(recipient["id"])
         except Exception as exc:
             dialog.finish(False, str(exc))
             return
+        if not ok:
+            dialog.finish(False, error)
+            return
         dialog.finish(True)
-        self._show_status(f"Recipient {recipient['name']} deleted.", kind="success")
+        self._show_status(f"Recipient {recipient['name']} deleted and synced.", kind="success")
         self._render_recipients()
 
     # --- Send Log ------------------------------------------------------

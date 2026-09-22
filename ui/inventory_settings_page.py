@@ -44,19 +44,24 @@ from loguru import logger
 from app.inventory_email_settings_service import get_settings as get_email_settings
 from app.inventory_email_settings_service import save_settings as save_email_settings
 from app.inventory_parameters_service import (
+    CWH_THRESHOLD_MULTIPLIER,
     DISPLAY_MODE_PACKS,
     DISPLAY_MODE_RAW,
+    EXCESS_TRANSFER_CANDIDATE_MULTIPLIER,
+    MODULE_KEY,
+    THRESHOLD_DISPLAY_MODE,
+    THRESHOLD_MULTIPLIER,
+    apply_full_configuration,
     get_cwh_threshold_multiplier,
     get_excess_transfer_candidate_multiplier,
+    get_full_configuration,
     get_threshold_display_mode,
     get_threshold_multiplier,
-    set_cwh_threshold_multiplier,
-    set_excess_transfer_candidate_multiplier,
-    set_threshold_display_mode,
-    set_threshold_multiplier,
 )
+from app.parameter_sync_service import check_for_config_update, try_push_and_apply
 from app.smtp_service import test_connection
 from ui.components import Card, PrimaryButton, SecondaryButton, SectionHeader
+from ui.parameter_sync_panel import ParameterSyncPanel
 from ui.theme import Color, Font, Spacing
 
 MULTIPLIER_SAVE_CONFIRMATION = (
@@ -116,11 +121,44 @@ class InventorySettingsPage(ctk.CTkFrame):
             outer, "Inventory Settings", "Tune the replenishment threshold calculation and display"
         ).pack(anchor="w", pady=(0, Spacing.LG))
 
+        self._sync_panel = ParameterSyncPanel(
+            outer,
+            check_fn=lambda: check_for_config_update(MODULE_KEY, get_full_configuration()),
+            apply_fn=lambda result: apply_full_configuration(result["config"]),
+            on_applied=self._reload_all_parameter_fields,
+        )
+        self._sync_panel.pack(fill="x", pady=(0, Spacing.MD))
+
         self._build_multiplier_card(outer)
         self._build_cwh_multiplier_card(outer)
         self._build_excess_multiplier_card(outer)
         self._build_display_mode_card(outer)
         self._build_email_settings_card(outer)
+
+    def on_show(self) -> None:
+        self._sync_panel.check_now()
+
+    def _reload_all_parameter_fields(self) -> None:
+        self._load_multiplier()
+        self._load_cwh_multiplier()
+        self._load_excess_multiplier()
+        self._load_display_mode()
+
+    def _save_one_parameter(self, name: str, value, status_label, confirmation_text: str, confirmation_color: str) -> None:
+        """Shared push-then-apply for all 4 single-field Save buttons on
+        this page: builds the FULL current config (so the other 3 fields'
+        own values are still included in what gets pushed) with just
+        `name` overridden, then routes through try_push_and_apply so the
+        save is blocked entirely (nothing written locally) if offline or
+        signed out -- see app.parameter_sync_service's own module
+        docstring."""
+        new_config = get_full_configuration()
+        new_config[name] = value
+        ok, error = try_push_and_apply(MODULE_KEY, new_config, apply_full_configuration)
+        if not ok:
+            status_label.configure(text=error, text_color=Color.ERROR)
+            return
+        status_label.configure(text=confirmation_text, text_color=confirmation_color)
 
     # --- Inventory Threshold Multiplier -----------------------------------
 
@@ -198,10 +236,12 @@ class InventorySettingsPage(ctk.CTkFrame):
             )
             return
 
-        set_threshold_multiplier(_format_multiplier(value))
+        self._save_one_parameter(
+            THRESHOLD_MULTIPLIER, _format_multiplier(value),
+            self.multiplier_status_label, MULTIPLIER_SAVE_CONFIRMATION, Color.WARNING,
+        )
         self.multiplier_entry.delete(0, "end")
         self.multiplier_entry.insert(0, _format_multiplier(value))
-        self.multiplier_status_label.configure(text=MULTIPLIER_SAVE_CONFIRMATION, text_color=Color.WARNING)
 
     # --- CWH Threshold Multiplier ------------------------------------------
     # A plain numeric entry, not a slider like the CFA multiplier above --
@@ -283,10 +323,12 @@ class InventorySettingsPage(ctk.CTkFrame):
             )
             return
 
-        set_cwh_threshold_multiplier(_format_multiplier(value))
+        self._save_one_parameter(
+            CWH_THRESHOLD_MULTIPLIER, _format_multiplier(value),
+            self.cwh_multiplier_status_label, CWH_MULTIPLIER_SAVE_CONFIRMATION, Color.WARNING,
+        )
         self.cwh_multiplier_entry.delete(0, "end")
         self.cwh_multiplier_entry.insert(0, _format_multiplier(value))
-        self.cwh_multiplier_status_label.configure(text=CWH_MULTIPLIER_SAVE_CONFIRMATION, text_color=Color.WARNING)
 
     # --- Excess Inventory Settings ------------------------------------------
     # Same free-form-entry pattern as the CWH multiplier above (not a
@@ -368,10 +410,12 @@ class InventorySettingsPage(ctk.CTkFrame):
             )
             return
 
-        set_excess_transfer_candidate_multiplier(_format_multiplier(value))
+        self._save_one_parameter(
+            EXCESS_TRANSFER_CANDIDATE_MULTIPLIER, _format_multiplier(value),
+            self.excess_multiplier_status_label, EXCESS_MULTIPLIER_SAVE_CONFIRMATION, Color.SUCCESS,
+        )
         self.excess_multiplier_entry.delete(0, "end")
         self.excess_multiplier_entry.insert(0, _format_multiplier(value))
-        self.excess_multiplier_status_label.configure(text=EXCESS_MULTIPLIER_SAVE_CONFIRMATION, text_color=Color.SUCCESS)
 
     # --- Threshold Display Mode --------------------------------------------
 
@@ -434,8 +478,7 @@ class InventorySettingsPage(ctk.CTkFrame):
 
     def _on_display_mode_save_clicked(self) -> None:
         mode = DISPLAY_MODE_VALUES[self.display_mode_menu.get()]
-        set_threshold_display_mode(mode)
-        self.display_mode_status_label.configure(text="Saved")
+        self._save_one_parameter(THRESHOLD_DISPLAY_MODE, mode, self.display_mode_status_label, "Saved and synced.", Color.SUCCESS)
 
     # --- Email Configuration ------------------------------------------------
     # Mirrors ui/settings_page.py's own "Email Settings" card as closely as
@@ -523,14 +566,9 @@ class InventorySettingsPage(ctk.CTkFrame):
         self.email_settings_result_label.configure(text="")
 
     def _on_email_settings_save_clicked(self) -> None:
-        # Automatic sending no longer exists (Phase 1 email authority work --
-        # see ui/inventory_automated_emails_page.py's Send Emails button).
-        # automatic_sending_enabled is passed False and otherwise unread by
-        # anything; left in place rather than migrated away.
         save_email_settings(
             self.email_sender_entry.get().strip(),
             self.email_password_entry.get().strip(),
-            False,
         )
         self.email_settings_result_label.configure(text="Email settings saved successfully.", text_color=Color.SUCCESS)
 

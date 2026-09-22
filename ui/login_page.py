@@ -20,6 +20,7 @@ in the app (Home <-> Path Validator / Inventory / Payment Analytics).
 """
 
 import threading
+import time
 from typing import Callable
 
 import customtkinter as ctk
@@ -30,6 +31,46 @@ from ui.components import Card, PrimaryButton
 from ui.theme import Color, Font, LOGO_PNG, Radius, Spacing
 
 _DEV_LABEL = "Version 2.0 Development"
+
+
+def _schedule_from_worker_thread(widget, callback, *args) -> None:
+    """widget.after(0, callback, *args), retried briefly if Tk raises
+    "main thread is not in main loop" -- the real race this guards
+    against: on.show() already defers the FIRST after(0, ...) registration
+    (the one made from the main thread) until the mainloop is confirmed
+    live, but this second one is issued from a background WORKER thread
+    once its own real work (a network call, or here restore_session())
+    finishes -- and when that work finishes fast enough (a fresh install
+    with no saved session, or Supabase unreachable, both near-instant),
+    the worker can call this before Tcl's own event loop has fully
+    stabilized immediately after app.mainloop() was entered, even though
+    "mainloop() has started" by then in the Python-code sense. Confirmed
+    for real: a genuine RuntimeError traceback from exactly this line,
+    surfaced only once restore_session() got fast enough (this project's
+    own SAFFRON_SKIP_SESSION_RESTORE testing flag) to make the race
+    reachable in practice.
+
+    ui/background_task.py's run_in_background has the identical
+    widget.after(0, ...)-from-a-worker-thread shape and the identical
+    exposure, but silently swallows this exact RuntimeError instead of
+    retrying -- fine there (every caller's own work already ran; only a
+    UI refresh is lost, and the next real check/action re-renders it
+    correctly). Silently swallowing it HERE would instead leave the
+    "Checking your saved session..." overlay -- the very first thing a
+    user sees -- stuck forever, since the callback that hides it would
+    just never run. A bounded retry (2s, 10ms apart -- Tcl's own
+    initialization window is on the order of milliseconds, not seconds)
+    is what actually fixes the user-visible symptom rather than just the
+    traceback."""
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            widget.after(0, callback, *args)
+            return
+        except RuntimeError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
 
 
 class LoginPage(ctk.CTkFrame):

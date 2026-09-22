@@ -76,6 +76,7 @@ from openpyxl.utils import get_column_letter
 from app.config import REVIEW_UPLOADS_DIR
 from database.connection import utcnow
 from app.hq_distribution_service import get_valid_hqs_for_division
+from app.module_data_version_service import bump_data_version
 from app.review_upload_service import get_slot_state
 from app.review_validation import _select_sheet
 
@@ -310,11 +311,15 @@ _BODY_FONT = Font(name="Calibri", size=10, bold=False)
 _CENTER = Alignment(horizontal="center")
 
 
-def _write_workbook(computed_blocks: list, months: tuple, out_path: Path) -> None:
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "COVERAGE SUMMARY"
-
+def _write_sheet(ws, computed_blocks: list, months: tuple) -> None:
+    """Writes the Coverage Summary grid (header row + one 9-row block per
+    BM) into an already-created worksheet -- split out from _write_workbook
+    so a caller building a multi-sheet workbook (see
+    app/review_notification_service.py's combined per-BM file) can write
+    this sheet alongside Opus Summary's and RGD Visit and Support's own
+    sheets in the SAME workbook, without this function creating or saving
+    a workbook of its own. Never sets ws.title -- that's the caller's job,
+    exactly like app.review_rgd_service._write_sheet already does."""
     headers = ("Division", "Region Name", "HQ", "Emp Code", "Name", "Designation", "No", "Parameters") + tuple(months)
     for col_idx, text in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_idx, value=text)
@@ -353,6 +358,12 @@ def _write_workbook(computed_blocks: list, months: tuple, out_path: Path) -> Non
                 ws.cell(row=row, column=col_idx).border = _BORDER
             row += 1
 
+
+def _write_workbook(computed_blocks: list, months: tuple, out_path: Path) -> None:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "COVERAGE SUMMARY"
+    _write_sheet(ws, computed_blocks, months)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
 
@@ -477,13 +488,17 @@ def generate_coverage_summary(division: str, report_progress=None) -> dict:
         report_progress(100, "Done.")
 
     logger.info(f"Coverage Summary generated for {division}: {len(computed)} BM blocks -> {out_path}")
+    bump_data_version("review_system")
     return {
         "success": True, "division": division, "file_path": str(out_path),
         "generated_at": utcnow(), "bm_count": len(computed), "errors": [],
     }
 
 
-# --- Per-BM Coverage Summary files (for app/review_coverage_notification_service.py) --
+# --- Filename sanitizing (reused by app/review_notification_service.py's
+# combined per-BM file, which supersedes this module's old
+# generate_coverage_summary_bm_files -- see that module for the current
+# "one BM = one file" email-workflow generator) --------------------------
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -492,95 +507,8 @@ def _safe_filename_component(name: str) -> str:
     """Strips characters Windows filenames can't contain and collapses
     whitespace -- preserves spaces/hyphens (unlike
     app.table_export_service.default_export_filename, which strips EVERY
-    non-alphanumeric character and would mangle the required
-    "Coverage Summary - <BM Name>.xlsx" format). "" (never invented text)
-    if nothing safe survives."""
+    non-alphanumeric character and would mangle a "<Prefix> - <BM
+    Name>.xlsx" format). "" (never invented text) if nothing safe
+    survives."""
     cleaned = _INVALID_FILENAME_CHARS.sub("", name or "")
     return " ".join(cleaned.split())
-
-
-def _bm_files_output_dir(division: str) -> Path:
-    out = _generated_output_dir() / "coverage_summary_bm" / division.strip().lower()
-    out.mkdir(parents=True, exist_ok=True)
-    return out
-
-
-def generate_coverage_summary_bm_files(division: str, report_progress=None) -> dict:
-    """Generates ONE Coverage Summary .xlsx per BM for `division` -- the
-    same calculations/formatting as generate_coverage_summary()'s single
-    combined workbook (both call the exact same
-    _compute_coverage_blocks()), just written one BM at a time via the
-    SAME _write_workbook() with a single-element block list, per
-    app/review_coverage_notification_service.py's "one BM = one file"
-    email-workflow rule. Never touches or replaces the existing combined
-    workbook (generated_coverage_summary_path) -- these are additional,
-    separate files under their own output folder.
-
-    Full-replace per division: every existing file under this division's
-    own per-BM output folder is deleted before regenerating, same
-    "an upload/run is a complete snapshot" convention as
-    generate_coverage_summary()'s own single combined file -- never a
-    stale file from a previous roster left behind.
-
-    A BM whose sanitized display name collides with an earlier BM's in
-    the SAME run (two different Employee Codes, same Name) is
-    disambiguated by appending that BM's own Employee Code in
-    parentheses, logged as a warning -- never silently overwriting one
-    BM's file with another's (BM identity is Employee Code, not name --
-    see this module's own docstring).
-
-    Returns:
-        {
-            "success": bool,
-            "division": str,
-            "files": [{"emp_code": str, "name": str, "file_path": str}, ...],
-            "errors": [str],
-        }
-    """
-    if report_progress:
-        report_progress(0, f"Checking {division} prerequisites...")
-
-    if division not in DIVISIONS:
-        return {"success": False, "division": division, "files": [], "errors": [f"Unknown division {division!r}."]}
-
-    ready, missing = coverage_prerequisites_ready(division)
-    if not ready:
-        return {"success": False, "division": division, "files": [],
-                "errors": [f"Required source file(s) not uploaded/valid yet: {', '.join(missing)}"]}
-
-    try:
-        computed = _compute_coverage_blocks(division, report_progress)
-
-        if report_progress:
-            report_progress(90, "Writing per-BM workbooks...")
-        out_dir = _bm_files_output_dir(division)
-        for old_file in out_dir.glob("*.xlsx"):
-            old_file.unlink()
-
-        files = []
-        used_filenames: dict[str, str] = {}  # sanitized filename stem -> emp_code that claimed it
-        for block in computed:
-            stem = _safe_filename_component(block.name) or block.emp_code
-            claimed_by = used_filenames.get(stem)
-            if claimed_by is not None and claimed_by != block.emp_code:
-                logger.warning(
-                    f"Coverage Summary BM files ({division}): two BMs share the display name "
-                    f"{block.name!r} ({claimed_by!r} and {block.emp_code!r}) -- disambiguating "
-                    f"{block.emp_code!r}'s filename with its own Employee Code."
-                )
-                stem = f"{stem} ({block.emp_code})"
-            used_filenames[stem] = block.emp_code
-
-            out_path = out_dir / f"Coverage Summary - {stem}.xlsx"
-            _write_workbook([block], COVERAGE_REPORT_MONTHS, out_path)
-            files.append({"emp_code": block.emp_code, "name": block.name, "file_path": str(out_path)})
-
-    except Exception as exc:
-        logger.exception(f"Coverage Summary per-BM file generation failed for {division}")
-        return {"success": False, "division": division, "files": [], "errors": [f"Generation failed: {exc!r}"]}
-
-    if report_progress:
-        report_progress(100, "Done.")
-
-    logger.info(f"Coverage Summary per-BM files generated for {division}: {len(files)} file(s) -> {out_dir}")
-    return {"success": True, "division": division, "files": files, "errors": []}

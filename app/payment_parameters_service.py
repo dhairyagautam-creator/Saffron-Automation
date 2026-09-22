@@ -101,6 +101,47 @@ def set_parameter(rule_name: str, parameter_name: str, value: str) -> None:
     logger.info(f"Saved Payment Analytics parameter {rule_name}.{parameter_name} = {value}")
 
 
+# --- Cloud config sync (parameter sync project, Phase 3) ------------------
+
+# module_configurations.module_key these 5 parameters sync under --
+# matches module_registry's canonical "payments_module" key.
+MODULE_KEY = "payments_module"
+
+
+def get_full_configuration() -> dict:
+    """{rule_name: {parameter_name: value}} for both rule groups -- same
+    shape as app.rule_parameters.get_full_configuration(), values as raw
+    strings for an exact round-trip."""
+    return {rule_name: get_parameters(rule_name) for rule_name in DEFAULT_PARAMETERS}
+
+
+def apply_full_configuration(config: dict) -> tuple[bool, str | None]:
+    """Writes a pulled config blob back into local storage. Returns
+    (True, None) on success, or (False, error_message) WITHOUT writing
+    anything if any value doesn't parse as a number -- a malformed
+    remote blob must never corrupt local state. A missing key is left
+    untouched; an unrecognized extra key is ignored."""
+    to_write = []
+    for rule_name, defaults in DEFAULT_PARAMETERS.items():
+        remote_params = config.get(rule_name)
+        if not isinstance(remote_params, dict):
+            continue
+        for parameter_name in defaults:
+            if parameter_name not in remote_params:
+                continue
+            value = remote_params[parameter_name]
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                return False, f"Remote {rule_name}.{parameter_name} was {value!r}, not a number -- rejected, nothing applied."
+            to_write.append((rule_name, parameter_name, str(value)))
+
+    for rule_name, parameter_name, value in to_write:
+        set_parameter(rule_name, parameter_name, value)
+
+    return True, None
+
+
 def get_historical_risk_thresholds() -> tuple[float, float, float]:
     """(green_max_days, yellow_max_days, orange_max_days) -- the
     Green/Yellow/Orange upper bounds used by

@@ -73,9 +73,8 @@ def _run_smoke_test_imports() -> None:
     import app.inventory_sync_service  # noqa: F401
     import app.master_email_recipients_service  # noqa: F401
     import app.notification_service  # noqa: F401
-    import app.review_coverage_email_settings_service  # noqa: F401
     import app.review_coverage_email_template  # noqa: F401
-    import app.review_coverage_notification_service  # noqa: F401
+    import app.review_notification_service  # noqa: F401
     import app.review_sync_service  # noqa: F401
     import app.work_distribution_email_settings_service  # noqa: F401
     import app.work_distribution_email_template  # noqa: F401
