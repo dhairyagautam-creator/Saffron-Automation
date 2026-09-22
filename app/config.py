@@ -112,6 +112,12 @@ WORK_DISTRIBUTION_UPLOADS_DIR = DATA_DIR / "work_distribution_uploads"
 # constants above: never committed (.gitignore), only the file path +
 # metadata are ever recorded in the database.
 HIERARCHY_UPLOADS_DIR = DATA_DIR / "hierarchy_uploads"
+# Physical copies of Path Validator's retained daily-call-report uploads --
+# one per division (Onyx/Guardians/Xandra), see
+# app/path_validator_upload_service.py. Same convention as the other
+# *_UPLOADS_DIR constants above: never committed (.gitignore), only the
+# file path + metadata are ever recorded in the database.
+PATH_VALIDATOR_UPLOADS_DIR = DATA_DIR / "path_validator_uploads"
 
 if DATA_DIR_ERROR is None:
     try:
@@ -122,6 +128,7 @@ if DATA_DIR_ERROR is None:
         INVENTORY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         WORK_DISTRIBUTION_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         HIERARCHY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        PATH_VALIDATOR_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         DATA_DIR_ERROR = f"Could not create application data folders under {DATA_DIR}: {exc!r}"
 

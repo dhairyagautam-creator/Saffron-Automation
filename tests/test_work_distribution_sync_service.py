@@ -397,8 +397,8 @@ def test_division_isolation_pulling_one_hierarchy_slot_never_touches_others_mani
         assert session.query(SyncState).filter_by(module="work_distribution", slot_key="hierarchy_xandra").first() is None
     finally:
         session.close()
-    assert hus.get_slot_state("Guardians")["uploaded"] is False
-    assert hus.get_slot_state("Xandra")["uploaded"] is False
+    assert hus.get_slot_state("work_distribution", "Guardians")["uploaded"] is False
+    assert hus.get_slot_state("work_distribution", "Xandra")["uploaded"] is False
 
 
 def test_latest_only_replacement_at_manifest_level(monkeypatch, tmp_path):

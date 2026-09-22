@@ -28,6 +28,15 @@ from app.config import REQUIRED_COLUMNS
 from app.coordinates import parse_coordinates
 from app.findings_service import get_summary_counts
 from app.metrics import calculate_metrics
+from app.path_validator_sync_service import (
+    DAILY_REPORT_SLOTS,
+    SLOT_LABELS,
+    apply_pending_updates,
+    check_for_updates,
+    hierarchy_gate_open,
+    upload_and_sync,
+)
+from app.path_validator_upload_service import get_slot_state as get_pv_slot_state, slot_id_for as pv_slot_id_for
 from app.session_state import get_active_import, set_active_import
 from app.timing import get_current_report, start_new_report
 from database.connection import get_session, to_local
@@ -35,10 +44,20 @@ from database.import_service import save_import
 from database.models import EmailNotification, ImportHistory
 from rules.hours_worked import evaluate as evaluate_hours_worked
 from rules.same_location import evaluate as evaluate_same_location
-from ui.components import Card, EmptyState, KPICard, PrimaryButton, SectionHeader, StatusBadge, styled_treeview
+from ui.background_task import run_in_background
+from ui.components import (
+    Card,
+    EmptyState,
+    KPICard,
+    PrimaryButton,
+    SecondaryButton,
+    SectionHeader,
+    StatusBadge,
+    styled_treeview,
+)
 from ui.icons import get_icon
 from app.table_export_service import default_export_filename, export_rows_with_ui
-from ui.theme import Color, Font, Spacing
+from ui.theme import Color, Font, Radius, Spacing
 
 # Import History table (see _render_history) -- module-level so
 # _on_export_history_clicked can reference the same columns/headings the
@@ -144,6 +163,8 @@ class OperationsPage(ctk.CTkFrame):
         self._loaded_file_paths: dict[str, str] = {}
         self._coord_stats: dict[str, dict] = {}
         self._current_display_rows: list[dict] = []
+        self._checking = False
+        self._banner_dismissed = False
 
         self._build_widgets()
 
@@ -162,6 +183,41 @@ class OperationsPage(ctk.CTkFrame):
 
         self.overall_status_badge = StatusBadge(header_row, "Ready", "neutral")
         self.overall_status_badge.pack(side="right", anchor="e", pady=(10, 0))
+
+        # --- Sync (see app/path_validator_sync_service.py) --------------------
+        sync_row = ctk.CTkFrame(outer, fg_color="transparent")
+        sync_row.pack(fill="x", pady=(0, Spacing.SM))
+        self._sync_status_label = ctk.CTkLabel(
+            sync_row, text="", font=Font.SMALL, text_color=Color.TEXT_MUTED, anchor="w"
+        )
+        self._sync_status_label.pack(side="left")
+        self._refresh_button = SecondaryButton(
+            sync_row, text="Refresh", image=get_icon("refresh", size=14, color=Color.PRIMARY),
+            command=self._run_check,
+        )
+        self._refresh_button.pack(side="right")
+
+        self._banner_container = ctk.CTkFrame(outer, fg_color="transparent")
+        self._banner_container.pack(fill="x", pady=(0, Spacing.SM))
+
+        # Persistent, visible block message when the hard hierarchy gate
+        # (see app/path_validator_sync_service.py::hierarchy_gate_open) is
+        # closed -- NOT just a silently-disabled Run Analysis button. A
+        # missing/empty employee_hierarchy_path_validator makes
+        # rules/same_location.py silently produce zero findings for
+        # everyone; this must be impossible to miss.
+        self._gate_banner = ctk.CTkLabel(
+            outer,
+            text="",
+            font=Font.SMALL_BOLD,
+            text_color=Color.ERROR,
+            anchor="w",
+            wraplength=760,
+            justify="left",
+            fg_color=Color.ERROR_SOFT,
+            corner_radius=Radius.SM,
+        )
+        self._gate_banner.pack(fill="x", pady=(0, Spacing.SM))
 
         # --- Active session summary --------------------------------------------
         session_row = ctk.CTkFrame(outer, fg_color="transparent")
@@ -305,9 +361,57 @@ class OperationsPage(ctk.CTkFrame):
 
     def on_show(self) -> None:
         """Called every time this page becomes visible — refresh live data
-        from local SQLite."""
+        from local SQLite.
+
+        Deliberately does NOT call _run_check() (the sync check) -- by
+        explicit design, checking the manifest only ever happens via an
+        explicit click on the "Refresh" button below, never automatically
+        on page visit/navigation. This also sidesteps a real incident this
+        page hit during development: _build_widgets() itself unconditionally
+        calls this method once, from inside __init__, and
+        ui/path_validator_module.py eagerly constructs every one of its
+        pages during ui/main_window.py's own MainWindow.__init__() --
+        before main.py's mainloop() has even started. A network-touching
+        call from here (even deferred via after_idle/after(0, ...), which
+        does NOT actually wait for mainloop -- customtkinter's own widget
+        construction calls update_idletasks() internally in several
+        places, flushing queued idle/after callbacks immediately,
+        synchronously, mid-construction) delayed the whole window from
+        appearing at all on a slow network, confirmed with a real
+        timestamped trace."""
         self._render_history()
         self._refresh_session_summary()
+        self._update_gate_banner()
+        self.refresh_from_state()
+
+    def _update_gate_banner(self) -> None:
+        # Cleared (not unpacked) when open -- an empty CTkLabel collapses
+        # to negligible height, and toggling with pack()/pack_forget()
+        # here would fight this widget's own fixed position among outer's
+        # other packed children (established once in _build_widgets).
+        if hierarchy_gate_open():
+            self._gate_banner.configure(text="")
+        else:
+            self._gate_banner.configure(
+                text=(
+                    "⚠ Organization Data hierarchy is empty — Run Analysis is blocked until Path "
+                    "Validator's Organization Data workbooks are connected and refreshed (or synced)."
+                )
+            )
+
+    def refresh_from_state(self) -> None:
+        """Renders every division's CURRENTLY PERSISTED filename -- same
+        pull-to-render-parity pattern as every other sync-enabled upload
+        page: a pulled file renders identically to a locally uploaded one.
+        Never touches self._loaded_dfs or the Run Analysis button -- a
+        sync pull auto-runs analysis itself once all 3 divisions' current
+        files are retained and the hierarchy gate is open (see
+        app/path_validator_sync_service.py); it never substitutes for a
+        manual local upload's own in-memory state."""
+        for division in DIVISION_SLOTS:
+            state = get_pv_slot_state(division)
+            if state["uploaded"]:
+                self.file_labels[division].configure(text=state["filename"], text_color=Color.TEXT_PRIMARY)
 
     def _reset_progress(self) -> None:
         for row in self.progress_rows.values():
@@ -491,6 +595,16 @@ class OperationsPage(ctk.CTkFrame):
             self._coord_stats[division] = coord_stats
             self.file_labels[division].configure(text=file_name, text_color=Color.TEXT_PRIMARY)
 
+            # Retain the source file locally and push it to the sync
+            # manifest -- see app/path_validator_sync_service.py.
+            # upload_and_sync re-validates internally (harmless, same
+            # file) and never auto-runs analysis on a LOCAL upload -- Run
+            # Analysis below stays the only trigger for this machine's own
+            # upload, exactly as before.
+            sync_result = upload_and_sync(pv_slot_id_for(division), file_path)
+            if not sync_result.get("synced"):
+                messagebox.showwarning("Not Synced", sync_result.get("sync_error") or "This file was not synced to the cloud.")
+
             loaded_count = len(self._loaded_dfs)
             total_slots = len(DIVISION_SLOTS)
             self.status_label.configure(
@@ -511,6 +625,21 @@ class OperationsPage(ctk.CTkFrame):
 
     def _on_run_analysis_clicked(self) -> None:
         if len(self._loaded_dfs) != len(DIVISION_SLOTS):
+            return
+
+        # Hard gate (see app/path_validator_sync_service.py::hierarchy_gate_open):
+        # a missing/empty employee_hierarchy_path_validator makes
+        # rules/same_location.py silently produce zero findings for every
+        # employee -- checked here too (not just via the persistent
+        # banner) so a stale banner state can never let this slip through.
+        if not hierarchy_gate_open():
+            messagebox.showerror(
+                "Organization Data Required",
+                "Run Analysis is blocked: Path Validator's Organization Data hierarchy has no "
+                "employees loaded yet. Without it, Same Location analysis would silently produce "
+                "zero findings for everyone.\n\n"
+                "Connect and refresh (or sync) Path Validator's Organization Data workbooks first.",
+            )
             return
 
         # The three division files are merged into exactly one DataFrame
@@ -615,3 +744,140 @@ class OperationsPage(ctk.CTkFrame):
         finally:
             for button in self.browse_buttons.values():
                 button.configure(state="normal")
+
+    # --- Sync check (banner) -- see app/path_validator_sync_service.py --
+    # covers this page's 3 daily-report slots; the other 3 (hierarchy) are
+    # ui/organization_data_page.py's own banner, sharing the same
+    # underlying check_for_updates()/apply_pending_updates() pair.
+
+    def _run_check(self) -> None:
+        if self._checking:
+            return
+        self._checking = True
+        self._refresh_button.configure(state="disabled")
+
+        def work(_report_progress):
+            return check_for_updates()
+
+        def on_done(result, error):
+            self._checking = False
+            if self._refresh_button.winfo_exists():
+                self._refresh_button.configure(state="normal")
+            if error is not None:
+                logger.error(f"Path Validator sync: check raised unexpectedly: {error!r}")
+                result = {"ok": False, "reason": "error"}
+
+            self._banner_dismissed = False
+            self._render_sync_status(result)
+            self._render_banner(result)
+            if result.get("ok"):
+                self.refresh_from_state()
+                self._update_gate_banner()
+                self._refresh_session_summary()
+                self._render_history()
+
+        run_in_background(self, work, on_done=on_done)
+
+    def _render_sync_status(self, result: dict) -> None:
+        if not self._sync_status_label.winfo_exists():
+            return
+        if not result.get("ok"):
+            reason = "Could not reach Supabase" if result.get("reason") == "offline" else "Last check failed"
+            self._sync_status_label.configure(text=f"⚠ {reason} -- showing this machine's last known state.")
+            return
+        page_changed = [c for c in (result.get("changed") or []) if c["slot_id"] in DAILY_REPORT_SLOTS]
+        self._sync_status_label.configure(
+            text="Synced." if not page_changed else f"{len(page_changed)} update(s) available below."
+        )
+
+    def _clear_banner(self) -> None:
+        for widget in self._banner_container.winfo_children():
+            widget.destroy()
+
+    def _render_banner(self, result: dict) -> None:
+        self._clear_banner()
+        if self._banner_dismissed or not result.get("ok"):
+            return
+        changed = [c for c in (result.get("changed") or []) if c["slot_id"] in DAILY_REPORT_SLOTS]
+        if not changed:
+            return
+
+        replacements = [c for c in changed if c["is_replacement"]]
+        first_fills = [c for c in changed if c["is_first_fill"]]
+
+        lines = []
+        for c in replacements:
+            lines.append(f"{SLOT_LABELS[c['slot_id']]} was replaced by {c['uploader_name']}.")
+        if first_fills:
+            lines.append(f"{len(first_fills)} new file{'s' if len(first_fills) != 1 else ''} available.")
+
+        banner = ctk.CTkFrame(self._banner_container, fg_color=Color.WARNING_SOFT, corner_radius=Radius.SM)
+        banner.pack(fill="x")
+        body = ctk.CTkFrame(banner, fg_color="transparent")
+        body.pack(fill="x", padx=Spacing.MD, pady=Spacing.SM)
+
+        text_col = ctk.CTkFrame(body, fg_color="transparent")
+        text_col.pack(side="left", fill="x", expand=True)
+        for line in lines:
+            ctk.CTkLabel(
+                text_col, text=f"⚠  {line}", font=Font.BODY, text_color=Color.WARNING, anchor="w",
+                wraplength=650, justify="left",
+            ).pack(anchor="w")
+
+        button_col = ctk.CTkFrame(body, fg_color="transparent")
+        button_col.pack(side="right")
+        PrimaryButton(
+            button_col, text="Pull Updates", command=lambda: self._on_pull_clicked([c["slot_id"] for c in changed])
+        ).pack(side="left", padx=(0, Spacing.SM))
+        ctk.CTkButton(
+            button_col, text="✕", width=28, height=28, fg_color="transparent",
+            text_color=Color.WARNING, hover_color=Color.WARNING_SOFT,
+            command=self._on_dismiss_banner,
+        ).pack(side="left")
+
+    def _on_dismiss_banner(self) -> None:
+        self._banner_dismissed = True
+        self._clear_banner()
+
+    def _on_pull_clicked(self, slot_ids: list[str]) -> None:
+        self._clear_banner()
+        ctk.CTkLabel(
+            self._banner_container, text="Pulling updates...", font=Font.BODY, text_color=Color.INFO, anchor="w"
+        ).pack(anchor="w")
+
+        def work(_report_progress):
+            return apply_pending_updates(slot_ids)
+
+        def on_done(result, error):
+            self._clear_banner()
+            if error is not None:
+                logger.error(f"Path Validator sync: apply raised unexpectedly: {error!r}")
+                messagebox.showerror("Sync Failed", f"Could not apply updates.\n\n{error}")
+                self._run_check()
+                return
+
+            self.refresh_from_state()
+            self._update_gate_banner()
+            self._refresh_session_summary()
+            self._render_history()
+
+            problems = []
+            for f in result["failed"]:
+                problems.append(f"{SLOT_LABELS[f['slot_id']]}: {f['reason']}")
+            for v in result["version_blocked"]:
+                problems.append(
+                    f"{SLOT_LABELS[v['slot_id']]}: uploaded by a newer app version "
+                    f"({v['remote_version']}) than this one -- update the app to apply it."
+                )
+            if problems:
+                messagebox.showerror(
+                    "Some Updates Could Not Be Applied",
+                    "\n\n".join(problems) + "\n\nThese slots will show again next time you check.",
+                )
+
+            # Re-check: a partial failure leaves the failed slots in
+            # `changed` again on the next check, so the banner persists
+            # for exactly those.
+            self._run_check()
+
+        run_in_background(self, work, on_done=on_done)

@@ -327,7 +327,7 @@ def _upload_report_and_sync(slot_id: str, report_type: str, division: str, sourc
 
 def _upload_hierarchy_and_sync(division: str, source_path: str) -> dict:
     slot_id = hierarchy_slot_id_for(division)
-    stored_path = store_hierarchy_upload(division, source_path)
+    stored_path = store_hierarchy_upload(_HIERARCHY_MODULE_KEY, division, source_path)
     # Repoint workbook_connections at the RETAINED copy, not the original
     # picked path -- exactly what a sync pull does (see _apply_hierarchy_slot),
     # so a local upload gets the same durability benefit (the original
@@ -399,7 +399,7 @@ def _local_slot_states() -> dict:
     from app.work_distribution_upload_service import get_all_slot_states as get_all_report_slot_states
 
     states = dict(get_all_report_slot_states())
-    states.update(get_all_hierarchy_slot_states())
+    states.update(get_all_hierarchy_slot_states(_HIERARCHY_MODULE_KEY))
     return states
 
 
@@ -522,8 +522,8 @@ def _apply_hierarchy_slot(slot_id: str, division: str, manifest_row: dict, file_
     stays visibly "pending" and is retried on the next check, same posture
     as a hash mismatch or processing failure in every other sync module."""
     extension = Path(manifest_row["filename"]).suffix.lower()
-    _clear_stale_hierarchy_copies(slot_id)
-    stored_path = _hierarchy_stored_path_for(slot_id, extension)
+    _clear_stale_hierarchy_copies(_HIERARCHY_MODULE_KEY, slot_id)
+    stored_path = _hierarchy_stored_path_for(_HIERARCHY_MODULE_KEY, slot_id, extension)
     try:
         with open(stored_path, "wb") as f:
             f.write(file_bytes)
@@ -649,7 +649,7 @@ def apply_pending_updates(slot_ids: list[str], progress_cb=None) -> dict:
                     slot_row = HierarchyUploadSlot(slot_id=slot_id)
                     session.add(slot_row)
                 slot_row.filename = manifest_row["filename"]
-                slot_row.file_path = str(_hierarchy_stored_path_for(slot_id, Path(manifest_row["filename"]).suffix.lower()))
+                slot_row.file_path = str(_hierarchy_stored_path_for(_HIERARCHY_MODULE_KEY, slot_id, Path(manifest_row["filename"]).suffix.lower()))
                 slot_row.uploaded_at = _parse_manifest_timestamp(manifest_row["uploaded_at"])
                 slot_row.uploaded_by = manifest_row["uploaded_by"]
                 slot_row.only_on_this_machine = False

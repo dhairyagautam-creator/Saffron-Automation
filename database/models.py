@@ -329,22 +329,65 @@ class WorkDistributionUploadSlot(Base):
 
 
 class HierarchyUploadSlot(Base):
-    """One row per Work Distribution hierarchy retained-upload slot -- one
-    per division (Onyx/Guardians/Xandra; see
-    app/hierarchy_upload_service.py's slot_id_for()), NOT one per
-    (report_type, division) the way WorkDistributionUploadSlot is -- there
-    is exactly one hierarchy workbook per division. Mirrors
-    WorkDistributionUploadSlot's shape/role exactly.
+    """One row per (module, division) hierarchy retained-upload slot --
+    shared across every module that owns its own hierarchy dataset (Work
+    Distribution, Path Validator, ...; see
+    app/hierarchy_upload_service.py's module docstring for why this is a
+    shared table, not one per module). `slot_id` (see slot_id_for()) is
+    the SAME literal string across modules for the same division (e.g.
+    "hierarchy_onyx") -- it's also the sync_manifest slot_key, and Work
+    Distribution's is already shipped under it, so it deliberately does
+    NOT embed module_key. `module_key` is the real scoping column here:
+    composite-unique on (module_key, slot_id), not slot_id alone -- Work
+    Distribution's own "hierarchy_onyx" and Path Validator's own
+    "hierarchy_onyx" are two different rows pointing at two different
+    files (see app/hierarchy_upload_service.py's module_key-prefixed
+    _stored_path_for -- the module_key column alone would not be enough
+    to prevent two modules' retained files from overwriting each other on
+    disk if the file NAME weren't also module-scoped).
 
     The uploaded file itself lives under app.config.HIERARCHY_UPLOADS_DIR,
     never in git and never in this row -- only its path is recorded here.
     This table is retention bookkeeping only; the division's own
-    workbook_connections row (app.workbook_connections, module_key=
-    "work_distribution") is what app.hierarchy_parser.refresh_hierarchy()
-    actually reads from -- a successful sync pull for this slot updates
-    BOTH (see app/work_distribution_sync_service.py)."""
+    workbook_connections row (app.workbook_connections, same module_key)
+    is what app.hierarchy_parser.refresh_hierarchy() actually reads from --
+    a successful sync pull for this slot updates BOTH (see each module's
+    own *_sync_service.py)."""
 
     __tablename__ = "hierarchy_upload_slots"
+    __table_args__ = (
+        UniqueConstraint("module_key", "slot_id", name="uq_hierarchy_upload_slots_module_key_slot_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    module_key = Column(String, nullable=False, default="")
+    slot_id = Column(String, nullable=False)
+    filename = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    uploaded_by = Column(String, nullable=True)
+    only_on_this_machine = Column(Boolean, nullable=False, default=False)
+
+
+class PathValidatorUploadSlot(Base):
+    """One row per Path Validator daily-call-report retained-upload slot --
+    one per division (Onyx/Guardians/Xandra; see
+    app/path_validator_upload_service.py's slot_id_for()) -- there is
+    exactly one report type for Path Validator, unlike Work Distribution's
+    3 (RGD/ABM/RBM), so slots are keyed by division alone. Mirrors
+    WorkDistributionUploadSlot's shape/role exactly.
+
+    The uploaded file itself lives under
+    app.config.PATH_VALIDATOR_UPLOADS_DIR, never in git and never in this
+    row -- only its path is recorded here. This table is retention
+    bookkeeping only -- it is entirely separate from raw_visits/
+    import_history/active_session (see database/import_service.py,
+    app/session_state.py), which stay exactly as additive/historical as
+    they've always been; this table only tracks "what's the CURRENT file
+    for this division right now", the input a future Run Analysis
+    (manual or sync-triggered) combines and feeds into save_import()."""
+
+    __tablename__ = "path_validator_upload_slots"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     slot_id = Column(String, nullable=False, unique=True)

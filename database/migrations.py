@@ -873,6 +873,49 @@ def ensure_work_distribution_upload_slots_table() -> None:
         logger.info(f"Migration: created '{WorkDistributionUploadSlot.__tablename__}' table")
 
 
+def ensure_hierarchy_upload_slots_module_key_column() -> None:
+    """Add module_key to hierarchy_upload_slots so it can be shared across
+    every module with its own hierarchy dataset (see
+    database/models.py's HierarchyUploadSlot docstring) -- this table
+    launched Work Distribution-only with a bare-unique slot_id; Path
+    Validator sync reusing it without this fix would collide on both the
+    database row AND the retained file for identically-named divisions
+    ("hierarchy_onyx" for both). Every pre-existing row predates any
+    module scoping, so it unambiguously belongs to Work Distribution --
+    the only module that has ever used this table -- and is backfilled to
+    module_key='work_distribution' rather than left blank (unlike
+    ensure_workbook_connections_module_key_column's '' backfill, there is
+    no ambiguity here to preserve by leaving it unmatched)."""
+    table = "hierarchy_upload_slots"
+    index_name = "uq_hierarchy_upload_slots_module_key_slot_id"
+    if not inspect(get_config_engine()).has_table(table):
+        return
+    existing_columns = _existing_columns(table)
+    existing_indexes = {ix["name"] for ix in inspect(get_config_engine()).get_indexes(table)}
+    with get_config_engine().begin() as conn:
+        if "module_key" not in existing_columns:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN module_key TEXT NOT NULL DEFAULT ''"))
+            conn.execute(text(f"UPDATE {table} SET module_key = 'work_distribution' WHERE module_key = ''"))
+            logger.info(f"Migration: added module_key column to '{table}' (existing rows backfilled to 'work_distribution')")
+        if index_name not in existing_indexes:
+            conn.execute(text(f"CREATE UNIQUE INDEX {index_name} ON {table} (module_key, slot_id)"))
+            logger.info(f"Migration: added UNIQUE(module_key, slot_id) index to '{table}'")
+
+
+def ensure_path_validator_upload_slots_table() -> None:
+    """Create path_validator_upload_slots -- Path Validator sync's local
+    retention slots for the daily call report (see database/models.py's
+    PathValidatorUploadSlot docstring). init_db()'s Base.metadata.create_all()
+    already creates this on a brand-new install; this covers every
+    existing install that ran init_db() before this model existed."""
+    from database.models import PathValidatorUploadSlot
+
+    engine = get_config_engine()
+    if not inspect(engine).has_table(PathValidatorUploadSlot.__tablename__):
+        PathValidatorUploadSlot.__table__.create(bind=engine)
+        logger.info(f"Migration: created '{PathValidatorUploadSlot.__tablename__}' table")
+
+
 def ensure_hierarchy_upload_slots_table() -> None:
     """Create hierarchy_upload_slots -- Work Distribution hierarchy sync's
     local retention slots (see database/models.py's HierarchyUploadSlot
@@ -1160,7 +1203,9 @@ def run_startup_migrations() -> None:
     ensure_inventory_upload_slots_table()
     ensure_workbook_connections_module_key_column()
     ensure_work_distribution_upload_slots_table()
+    ensure_path_validator_upload_slots_table()
     ensure_hierarchy_upload_slots_table()
+    ensure_hierarchy_upload_slots_module_key_column()
     ensure_work_distribution_doctors_bm_abm_code_columns()
     ensure_work_distribution_findings_employee_code_column()
     ensure_app_settings_inventory_reset_column()
