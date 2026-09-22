@@ -120,6 +120,17 @@ class InvestigationFinding(Base):
     # Bumped on every notification-status change (set_notification_status()
     # in app/findings_service.py).
     updated_at = Column(DateTime, nullable=True)
+    # When this employee/visit_date/rule case was FIRST ever flagged --
+    # unlike created_at, this is carried forward across a rule re-run's
+    # delete+recreate cycle (rules/same_location.py, rules/hours_worked.py's
+    # own existing_outcome dicts), the same way notification_status already
+    # is. created_at is NOT usable for "how long has this been unresolved"
+    # -- it gets reset to utcnow() on every single re-run, including a
+    # sync-triggered auto-run (see app/path_validator_sync_service.py), so a
+    # finding stuck unresolved for months would always read as "just now".
+    # See app/notification_service.py's STALE_FINDING_AGE_DAYS gate, the
+    # one thing this column exists for.
+    first_flagged_at = Column(DateTime, nullable=True, default=utcnow)
 
 
 class WorkbookConnection(Base):

@@ -106,11 +106,15 @@ def evaluate(import_id: int) -> dict:
         session = get_session()
         try:
             # Carry forward any automatic notification outcome for a
-            # still-matching finding, same as rules/same_location.py.
+            # still-matching finding, same as rules/same_location.py --
+            # including first_flagged_at (see that file's own comment on
+            # why: created_at is stamped fresh below on every re-run,
+            # first_flagged_at is what survives it).
             existing_outcome = {
                 (row.employee_code, row.visit_date): {
                     "notification_status": row.notification_status,
                     "suppression_reason": row.suppression_reason,
+                    **({"first_flagged_at": row.first_flagged_at} if row.first_flagged_at is not None else {}),
                 }
                 for row in session.query(InvestigationFinding)
                 .filter_by(rule_name=RULE_NAME, import_id=import_id)

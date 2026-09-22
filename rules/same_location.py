@@ -256,7 +256,15 @@ def evaluate(import_id: int) -> dict:
             # resetting it to unsent every time the rule re-runs -- this is
             # what stops an already-emailed finding from being re-sent on a
             # re-run (build_email_batch only processes notification_status
-            # != "Sent").
+            # != "Sent"). first_flagged_at is carried forward the same way,
+            # for the same reason -- see database/models.py's own docstring
+            # on that column: unlike created_at (always stamped fresh below),
+            # this is what lets app/notification_service.py's
+            # STALE_FINDING_AGE_DAYS gate tell a genuinely new finding from
+            # one that's been stuck unresolved for weeks across many
+            # re-runs. Omitted entirely (not carried forward as None) for a
+            # legacy row that somehow predates the backfill migration, so
+            # the column's own utcnow default applies instead of exploding.
             existing_outcome = {
                 (row.employee_code, row.visit_date): {
                     "notification_status": row.notification_status,
@@ -265,6 +273,7 @@ def evaluate(import_id: int) -> dict:
                     "hospital_lat": row.hospital_lat,
                     "hospital_lon": row.hospital_lon,
                     "hospital_distance_meters": row.hospital_distance_meters,
+                    **({"first_flagged_at": row.first_flagged_at} if row.first_flagged_at is not None else {}),
                 }
                 for row in session.query(InvestigationFinding)
                 .filter_by(rule_name=RULE_NAME, import_id=import_id)

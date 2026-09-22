@@ -426,6 +426,32 @@ def ensure_investigation_findings_updated_at_column() -> None:
     )
 
 
+def ensure_investigation_findings_first_flagged_at_column() -> None:
+    """Add first_flagged_at to investigation_findings if it predates this
+    fix (see database/models.py's own docstring on the column, and
+    app/notification_service.py's STALE_FINDING_AGE_DAYS gate -- the
+    re-notification bug this column exists to fix). Backfilled from each
+    existing row's own created_at -- not exactly right (a long-unresolved
+    case's created_at was already reset by its most recent rule re-run,
+    same reason this column exists at all), but the best available
+    starting point for cases already in flight; every row this migration
+    touches gets a correct, carried-forward value from its very next rule
+    re-run onward."""
+    if not inspect(get_config_engine()).has_table(INVESTIGATION_FINDINGS_TABLE):
+        return
+    existing = _existing_columns(INVESTIGATION_FINDINGS_TABLE)
+    if "first_flagged_at" in existing:
+        return
+    with get_config_engine().begin() as conn:
+        conn.execute(text(f"ALTER TABLE {INVESTIGATION_FINDINGS_TABLE} ADD COLUMN first_flagged_at DATETIME"))
+        conn.execute(
+            text(f"UPDATE {INVESTIGATION_FINDINGS_TABLE} SET first_flagged_at = created_at WHERE first_flagged_at IS NULL")
+        )
+    logger.info(
+        f"Migration: added first_flagged_at column to '{INVESTIGATION_FINDINGS_TABLE}' (backfilled from created_at)"
+    )
+
+
 def ensure_email_notifications_updated_at_column() -> None:
     """Add updated_at to email_notifications if it predates this fix --
     same updated_at-backfilled-from-created_at treatment as
@@ -1213,6 +1239,7 @@ def run_startup_migrations() -> None:
     ensure_investigation_findings_division_column()
     ensure_inventory_new_sales_format_schema()
     ensure_investigation_findings_updated_at_column()
+    ensure_investigation_findings_first_flagged_at_column()
     drop_investigation_findings_status_column()
     ensure_email_notifications_updated_at_column()
     ensure_workbook_connections_updated_at_column()

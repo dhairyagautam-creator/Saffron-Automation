@@ -70,7 +70,7 @@ before/after status line.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from loguru import logger
 from sqlalchemy import inspect, text
@@ -146,6 +146,55 @@ def _validate_no_raw_coordinates(employee_name: str, addresses: list[str]) -> No
                 f"reached the final address list: {address!r}. This should never happen post-fix -- "
                 "treat as a bug, not expected behavior."
             )
+
+
+# Root-caused 2026-08-25 (Release Debugging Mode investigation), reproduced
+# and re-fixed 2026-09-23 for the current architecture: a finding whose
+# recipient could never be resolved (e.g. a vacant RBM), or that otherwise
+# never reaches notification_status "Sent", never advances past that
+# not-yet-sent state -- nothing in the pipeline ever revisits it. Since
+# build_email_batch has always swept up every notification_status != "Sent"
+# finding for its import_id regardless of age, that finding keeps getting
+# included in EVERY later batch -- both the per-manager batch and the
+# master report email, which includes every unresolved finding regardless
+# of routing outcome -- as if freshly detected. Confirmed real in
+# production once already (a finding from 2026-07-15 still being emailed
+# 2026-08-25, 41 days later) and confirmed to still be structurally
+# possible today, under the current notification_status-based (not the
+# old status-based) eligibility check.
+#
+# Keyed off first_flagged_at, NOT created_at -- created_at is stamped fresh
+# by rules/same_location.py and rules/hours_worked.py on every single rule
+# re-run (including a Path Validator sync auto-run), so it never actually
+# accumulates age. first_flagged_at is carried forward across that
+# delete+recreate cycle the same way notification_status already is (see
+# both rule files' own existing_outcome dicts) -- see database/models.py's
+# own docstring on that column.
+#
+# This constant gates ONLY a finding's eligibility for a NEW email batch --
+# it changes nothing else: the finding is not deleted, its
+# notification_status is not touched, its import_id association is
+# unchanged, and it remains fully visible on the Findings page for manual
+# review. A finding re-included within this window is expected, intended
+# retry behavior (an RBM that was vacant yesterday may have one today) --
+# this only stops the pathological case of a finding sitting unresolved
+# for WEEKS and resurfacing indefinitely as if freshly detected.
+STALE_FINDING_AGE_DAYS = 7
+
+
+def _is_stale_for_email(finding) -> bool:
+    """True if `finding.first_flagged_at` (when this case was FIRST ever
+    flagged, carried forward across rule re-runs -- NOT `finding.created_at`,
+    which is stamped fresh on every re-run, and NOT today's batch-generation
+    date) is more than STALE_FINDING_AGE_DAYS old. A finding with no
+    first_flagged_at (predates the backfill migration, or a legacy row the
+    carry-forward genuinely never saw) is never considered stale -- fail
+    open rather than silently excluding a finding this check was never
+    designed to evaluate."""
+    if finding.first_flagged_at is None:
+        return False
+    return (datetime.now() - finding.first_flagged_at) > timedelta(days=STALE_FINDING_AGE_DAYS)
+
 
 # Friendly label for each rule_name, used in the HTML/text email instead of
 # the raw internal rule name. Any rule not listed here just falls back to
@@ -541,12 +590,28 @@ def build_email_batch(import_id: int, progress_callback=None) -> list:
     (hospital suppression, reverse geocoding, email generation) — once per
     item as it completes, so the UI can show a live "N / M" count instead
     of a single before/after status line.
+
+    A not-yet-sent finding older than STALE_FINDING_AGE_DAYS (see that
+    constant's own docstring) is excluded from this batch entirely --
+    logged, not silently dropped -- so a finding nobody could ever resolve
+    doesn't keep resurfacing indefinitely, in either the per-manager batch
+    or the master report, as if it belonged to today's run. It stays fully
+    visible on the Findings page either way, notification_status untouched.
     """
     progress_callback = progress_callback or (lambda stage, **kwargs: None)
     report = get_current_report()
     geocode_stats_by_employee: dict = {}
 
-    findings = [f for f in get_all_findings(import_id) if f.notification_status != "Sent"]
+    not_yet_sent = [f for f in get_all_findings(import_id) if f.notification_status != "Sent"]
+    findings = [f for f in not_yet_sent if not _is_stale_for_email(f)]
+    stale_findings = [f for f in not_yet_sent if _is_stale_for_email(f)]
+    if stale_findings:
+        logger.warning(
+            f"build_email_batch(import_id={import_id}): {len(stale_findings)} finding(s) excluded as stale "
+            f"(unresolved for more than {STALE_FINDING_AGE_DAYS} days) -- still visible on the Findings "
+            "page for manual review: "
+            + ", ".join(f"{f.employee_name} ({f.employee_code}) on {f.visit_date}" for f in stale_findings)
+        )
 
     progress_callback("hierarchy", label="Resolving hierarchy...")
     hierarchy_timer = PhaseTimer()

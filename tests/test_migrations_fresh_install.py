@@ -140,3 +140,63 @@ def test_existing_database_upgrading_through_phase1_column_drop_runs_cleanly(tmp
     with engine.connect() as conn:
         row_count = conn.execute(text("SELECT COUNT(*) FROM app_settings")).scalar()
     assert row_count == 1
+
+
+def test_investigation_findings_first_flagged_at_backfills_from_created_at_and_is_idempotent(tmp_path, monkeypatch):
+    """ensure_investigation_findings_first_flagged_at_column() (the
+    re-notification bug fix, see app/notification_service.py's
+    STALE_FINDING_AGE_DAYS) against an EXISTING investigation_findings
+    table that predates the column: existing rows must be backfilled from
+    their own created_at (the best available approximation for a case
+    already in flight -- a correct value only starts accumulating from
+    that row's next rule re-run onward, via the carry-forward in
+    rules/same_location.py / rules/hours_worked.py). Running it twice
+    must be a safe no-op that never overwrites an already-set value."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'pre_first_flagged_at.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE investigation_findings (
+                    finding_id INTEGER NOT NULL PRIMARY KEY,
+                    import_id INTEGER,
+                    employee_name VARCHAR NOT NULL,
+                    employee_code VARCHAR NOT NULL,
+                    visit_date DATE NOT NULL,
+                    rule_name VARCHAR NOT NULL,
+                    message VARCHAR NOT NULL,
+                    notification_status VARCHAR,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO investigation_findings "
+                "(finding_id, import_id, employee_name, employee_code, visit_date, rule_name, message, created_at) "
+                "VALUES (1, 1, 'Emp One', 'E1', '2026-07-15', 'SAME_LOCATION', 'msg', '2026-07-15 09:00:00')"
+            )
+        )
+    monkeypatch.setattr(db_connection, "_engine", engine)
+    monkeypatch.setattr(db_connection, "_Session", sessionmaker(bind=engine, autoflush=False, autocommit=False))
+
+    from database.migrations import ensure_investigation_findings_first_flagged_at_column
+
+    ensure_investigation_findings_first_flagged_at_column()
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT created_at, first_flagged_at FROM investigation_findings WHERE finding_id = 1")
+        ).one()
+    assert row.first_flagged_at == row.created_at
+
+    # Idempotent: a second run must not raise (column already exists) and
+    # must not clobber the now-set value.
+    ensure_investigation_findings_first_flagged_at_column()
+    with engine.connect() as conn:
+        row_again = conn.execute(
+            text("SELECT first_flagged_at FROM investigation_findings WHERE finding_id = 1")
+        ).one()
+    assert row_again.first_flagged_at == row.first_flagged_at
