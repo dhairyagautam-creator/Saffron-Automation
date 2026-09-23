@@ -33,6 +33,9 @@ Thumbs.db
 
 # Secrets
 .env
+# Private secrets/credentials inventory -- names/locations/verification steps
+# only (see RELEASING.md), but still not for the public repo.
+SECRETS_CHECKLIST.md
 
 # --- Release hardening: machine-specific / sensitive, never commit publicly ---
 # Real business reports (customer/location data); keep reports/__init__.py

@@ -1,5 +1,10 @@
 # HANDOFF — Saffron Automation v2.1
 
+**Current release: v3.0.0** (2026-09-23) — see [CHANGELOG.md](../CHANGELOG.md). Updated by every
+release per [RELEASING.md](../RELEASING.md); the body below this line was last caught up on
+2026-09-11 and is not re-verified on every release, so treat older sections as historical context,
+not current state, unless RELEASING.md's most recent pass touched them.
+
 State-of-the-world for a fresh session with no memory of how it got here. Written 2026-09-11.
 Every claim below was checked against live `git status`/`git log`/code at time of writing, except
 where marked as a conversation-only decision (Section 3) — those are real product decisions with

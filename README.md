@@ -90,12 +90,18 @@ The application ships to end users as a Windows installer (built with
 bundles everything needed to run, including the Python interpreter, so recipients never install
 anything else first.
 
-1. **Bump the version.** Edit `app/version.py` (`APP_VERSION`, `BUILD_DATE`) and
-   `installer/saffron_validator.iss` (`MyAppVersion`, and the `Output:` comment above it) to
-   match — both need to agree. Also check `CHANNEL` (`app/version.py`) and `MyChannel` (the
-   `.iss` file) are set to the channel you actually intend (`"production"` or `"development"`)
-   — see [UPDATER_README.md](UPDATER_README.md#release-channels-version-20) for the full
-   channel system, including the GitHub pre-release step Development builds require.
+1. **Bump the version:**
+   ```powershell
+   python bump_version.py 3.1.0
+   ```
+   Updates `app/version.py`'s `APP_VERSION`/`BUILD_DATE` and `installer/saffron_validator.iss`'s
+   `MyAppVersion` together, so they can't drift out of sync. Also check `CHANNEL`
+   (`app/version.py`) and `MyChannel` (the `.iss` file) are set to the channel you actually
+   intend (`"production"` or `"development"`) — see
+   [UPDATER_README.md](UPDATER_README.md#release-channels-version-20) for the full channel
+   system, including the GitHub pre-release step Development builds require. See
+   [RELEASING.md](RELEASING.md) for the complete release checklist (changelog, HANDOFF, secrets,
+   branch protection).
 2. **Rebuild the executable:**
    ```powershell
    .\build_exe.ps1

@@ -29,4 +29,9 @@
 # mask a real dependency change (like this file's own hiddenimports list)
 # behind a stale cached analysis from a previous build.
 
+# .env gets bundled into the build -- refuse to build if it's missing or has
+# a blank SUPABASE_URL/SUPABASE_ANON_KEY (see check_env.py for why).
+& ".\.venv\Scripts\python.exe" check_env.py .env
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
 & ".\.venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean "Saffron Automation.spec"
