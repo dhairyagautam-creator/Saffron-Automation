@@ -67,7 +67,16 @@ INSTALLER_FILENAME = "Saffron Automation Setup.exe"
 # space-separated filename missed every real release. Comparing normalized
 # forms survives that rewrite, and any other separator variation a future
 # manual upload might introduce.
-_INSTALLER_NAME_TOKEN = "saffronautomationsetup"
+#
+# Just "saffronautomation", not "...setup": v3.0.0's release asset was
+# uploaded as "Saffron-Automation-Windows-3.0.0.exe" (the CI workflow's own
+# artifact-staging name, see .github/workflows/build.yml), which contains
+# no "setup" at all -- the old, more specific token silently matched zero
+# releases going forward, meaning EVERY installed build could no longer
+# find ANY update after v2.4.0 shipped. This repo's releases only ever
+# attach this project's own installer, so the looser token carries no
+# real risk of matching an unrelated asset.
+_INSTALLER_NAME_TOKEN = "saffronautomation"
 
 
 def _normalize_asset_name(name: str) -> str:
