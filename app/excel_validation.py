@@ -669,8 +669,24 @@ def _detect_new_format_groups(grid: list):
             if name is None or str(name).strip() == "":
                 break
 
+            # A forward-filled name with no Closing/Transit label under its
+            # own starting column isn't a real group -- it's the previous
+            # branch's name bleeding into trailing blank columns (Excel
+            # commonly saves a used-range wider than the real data, e.g.
+            # leftover formatting past the last column). Stop here instead
+            # of misreading those as a malformed group under the last
+            # legitimate branch.
+            if field_row[col] is None or str(field_row[col]).strip() == "":
+                break
+
             span_end = col
-            while span_end < len(names_row) and names_row[span_end] == name:
+            while (
+                span_end < len(names_row)
+                and names_row[span_end] == name
+                and span_end < len(field_row)
+                and field_row[span_end] is not None
+                and str(field_row[span_end]).strip() != ""
+            ):
                 span_end += 1
             width = span_end - col
             labels = [_normalize_header(v) for v in field_row[col:span_end]]

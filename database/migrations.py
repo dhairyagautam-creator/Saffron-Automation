@@ -949,7 +949,17 @@ def ensure_workbook_connections_module_key_column() -> None:
     SQLite has no ALTER TABLE ADD CONSTRAINT; a UNIQUE index enforces the
     identical (module_key, workbook_name) guarantee without a table
     rebuild -- same technique as
-    ensure_manager_work_allocation_records_pair_month_unique_index above."""
+    ensure_manager_work_allocation_records_pair_month_unique_index above.
+
+    This does NOT remove the table's original single-column
+    `workbook_name UNIQUE` constraint (from before module_key existed --
+    see database/models.py's git history) on any database that predates
+    this migration: that constraint is baked into the table's own DDL by
+    SQLite, not a separate droppable index, so adding this new composite
+    index leaves the old one still enforced underneath it. See
+    ensure_workbook_connections_legacy_single_column_unique_dropped below,
+    which handles that -- and must run after this function, since it
+    needs the module_key column this one adds."""
     table = "workbook_connections"
     index_name = "uq_workbook_connections_module_key_name"
     if not inspect(get_config_engine()).has_table(table):
@@ -963,6 +973,86 @@ def ensure_workbook_connections_module_key_column() -> None:
         if index_name not in existing_indexes:
             conn.execute(text(f"CREATE UNIQUE INDEX {index_name} ON {table} (module_key, workbook_name)"))
             logger.info(f"Migration: added UNIQUE(module_key, workbook_name) index to '{table}'")
+
+
+def ensure_workbook_connections_legacy_single_column_unique_dropped() -> None:
+    """Rebuild workbook_connections to actually drop the pre-module_key
+    `workbook_name UNIQUE` constraint (see the previous function's
+    docstring) -- a real bug hit in production: two different modules
+    (e.g. Path Validator and Work Distribution) both naming their own
+    workbook connection "Onyx" is exactly the documented, supported case
+    (see WorkbookConnection's docstring), but on any database created
+    before the module_key split, saving the second module's "Onyx" row
+    still fails with `sqlite3.IntegrityError: UNIQUE constraint failed:
+    workbook_connections.workbook_name` -- the old inline constraint,
+    not the new composite one, rejecting it.
+
+    Detected structurally (not by table-name/date heuristics): SQLite
+    exposes a column-level UNIQUE as an autoindex via PRAGMA index_list,
+    so a unique index whose column list is exactly ["workbook_name"]
+    means the legacy constraint is still there. A fresh install (or one
+    already rebuilt by this function) has no such index and this is a
+    no-op.
+
+    SQLite can't drop a column-level constraint with ALTER TABLE -- the
+    standard rebuild is: copy into a new table built from the current
+    schema (no inline UNIQUE), drop the old table, rename the new one
+    into place, then recreate the composite UNIQUE index (dropped along
+    with the old table)."""
+    table = "workbook_connections"
+    engine = get_config_engine()
+    if not inspect(engine).has_table(table):
+        return
+
+    with engine.begin() as conn:
+        legacy_unique_found = False
+        for row in conn.execute(text(f"PRAGMA index_list({table})")).fetchall():
+            index_name, is_unique = row[1], row[2]
+            if not is_unique:
+                continue
+            columns = [info[2] for info in conn.execute(text(f"PRAGMA index_info({index_name})")).fetchall()]
+            if columns == ["workbook_name"]:
+                legacy_unique_found = True
+                break
+        if not legacy_unique_found:
+            return
+
+        logger.info(
+            f"Migration: rebuilding '{table}' to drop its legacy single-column "
+            "UNIQUE(workbook_name) constraint (pre-dates module_key scoping -- "
+            "was silently blocking two different modules from both naming a "
+            "workbook connection the same thing, e.g. 'Onyx')"
+        )
+        rebuild_table = f"{table}_rebuild"
+        conn.execute(text(f"DROP TABLE IF EXISTS {rebuild_table}"))
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE {rebuild_table} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    module_key TEXT NOT NULL DEFAULT '',
+                    workbook_name TEXT NOT NULL,
+                    file_path TEXT,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"INSERT INTO {rebuild_table} (id, module_key, workbook_name, file_path, updated_at) "
+                f"SELECT id, module_key, workbook_name, file_path, updated_at FROM {table}"
+            )
+        )
+        conn.execute(text(f"DROP TABLE {table}"))
+        conn.execute(text(f"ALTER TABLE {rebuild_table} RENAME TO {table}"))
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_workbook_connections_module_key_name "
+                f"ON {table} (module_key, workbook_name)"
+            )
+        )
+    logger.info(f"Migration: '{table}' rebuilt -- legacy constraint dropped, composite index recreated")
 
 
 def ensure_inventory_upload_slots_table() -> None:
@@ -1257,6 +1347,7 @@ def run_startup_migrations() -> None:
     ensure_module_data_version_table()
     ensure_inventory_upload_slots_table()
     ensure_workbook_connections_module_key_column()
+    ensure_workbook_connections_legacy_single_column_unique_dropped()
     ensure_work_distribution_upload_slots_table()
     ensure_path_validator_upload_slots_table()
     ensure_hierarchy_upload_slots_table()
