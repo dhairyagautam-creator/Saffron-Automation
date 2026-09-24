@@ -14,9 +14,9 @@ leave CHANNEL as "development". For a Production release: set APP_VERSION
 to the plain version (no "-dev.X.Y" suffix) and CHANNEL to "production".
 """
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.0.1"
 CHANNEL = "production"  # "development" | "production"
-BUILD_DATE = "2026-09-23"
+BUILD_DATE = "2026-09-24"
 DEVELOPER = "Dhairya Gautam"
 COMPANY = "Saffron Formulations"
 DESCRIPTION = "Internal Enterprise Automation Platform (Path Validator, Inventory Monitoring, Payment Analytics)"

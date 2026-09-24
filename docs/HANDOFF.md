@@ -1,6 +1,6 @@
 # HANDOFF — Saffron Automation v2.1
 
-**Current release: v3.0.0** (2026-09-23) — see [CHANGELOG.md](../CHANGELOG.md). Updated by every
+**Current release: v3.0.1** (2026-09-24) — see [CHANGELOG.md](../CHANGELOG.md). Updated by every
 release per [RELEASING.md](../RELEASING.md); the body below this line was last caught up on
 2026-09-11 and is not re-verified on every release, so treat older sections as historical context,
 not current state, unless RELEASING.md's most recent pass touched them.

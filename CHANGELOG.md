@@ -1,5 +1,29 @@
 # Changelog
 
+## v3.0.1 — 2026-09-24
+
+### Bug fixes
+
+- **Inventory Report uploads no longer falsely rejected for trailing blank columns.** A common Excel
+  artifact — the saved sheet's used-range extending past the real data with empty, unlabeled columns
+  after the last branch — was being swept into that branch's column group by the parser's header
+  detection, inflating it into a "malformed" group and rejecting an otherwise-valid file outright.
+- **Fixed a real crash connecting a second module's hierarchy workbook of the same name** (e.g. Path
+  Validator's "Onyx" after Work Distribution's own "Onyx" already existed): `sqlite3.IntegrityError:
+  UNIQUE constraint failed: workbook_connections.workbook_name`. A leftover single-column UNIQUE
+  constraint from before per-module workbook scoping existed was never actually dropped on databases
+  created before that migration — only masked by a newer composite index layered on top of it. Startup
+  migrations now detect and rebuild the table to remove it.
+
+### Process
+
+- Added `check_env.py` (fails CI/build loudly on an empty `SUPABASE_URL`/`SUPABASE_ANON_KEY`, the
+  actual cause of a broken v3.0.0 installer), `bump_version.py`, `draft_changelog.py`, and
+  `RELEASING.md` — see that file for the full release checklist.
+- Branch protection added on `main` (both CI jobs required).
+
+---
+
 A condensed, human-readable history. **`V2_MIGRATION_LOG.md`** (in this same root) is the verbose,
 authoritative record for everything through Milestone 57 (2026-07-29) — every entry below that point is a
 compression of that file, not a replacement for it; go there for exact file diffs, verification steps, and
