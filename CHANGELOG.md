@@ -4,6 +4,11 @@
 
 ### Bug fixes
 
+- **Fixed the auto-updater silently missing every release since v2.4.0.** Its installer-asset
+  matching required "setup" in the release asset's filename; the CI pipeline's actual uploaded
+  asset name (`Saffron-Automation-Windows-X.Y.Z.exe`) never contained it, so no installed build
+  older than v3.0.0 could ever detect an update. Verified fixed against the live, published
+  v3.0.0 GitHub release.
 - **Inventory Report uploads no longer falsely rejected for trailing blank columns.** A common Excel
   artifact — the saved sheet's used-range extending past the real data with empty, unlabeled columns
   after the last branch — was being swept into that branch's column group by the parser's header
